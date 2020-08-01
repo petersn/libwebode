@@ -3,6 +3,14 @@ body {
     background: #333;
 }
 
+.cm-drive {
+    color: lightgreen;
+}
+
+.cm-compilevar {
+    color: #ab0;
+}
+
 .CodeMirror {
     height: 800px !important;
 }

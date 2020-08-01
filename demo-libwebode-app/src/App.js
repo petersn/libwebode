@@ -24,16 +24,22 @@ RawCodeMirror.defineSimpleMode("odelang", {
         // Match strings.
         {regex: /"(?:[^\\]|\\.)*?(?:"|$)/, token: "string"},
         // Match keywords.
-        {regex: /(?:as|plot|tolerance|simtime)\b/, token: "keyword"},
+        {regex: /(?:fn|as|for|in|if|else|return|native|var|dyn|const|int|float|plot|tolerance|simtime)\b/, token: "keyword"},
+        // Match initialization and driving.
+        {regex: /~|<-/, token: "drive"},
         // Match built-ins.
-        {regex: /Uniform|Slider|Normal|exp|sin|cos/, token: "atom"},
+        {regex: /(?:Uniform|Slider|Normal|exp|sin|cos|len|index_interpolating|print)\b/, token: "builtin"},
         // Match numbers.
         {regex: /0x[a-f\d]+|[-+]?(?:\.\d+|\d+\.?\d*)(?:e[-+]?\d+)?/i, token: "number"},
         // Handle comments.
         {regex: /\/\/.*/, token: "comment"},
         {regex: /\/\*/, token: "comment", next: "comment"},
         // Match operators.
-        {regex: /[-+\/*=<>!]+/, token: "operator"},
+        {regex: /[-+\/*=<>!~]+/, token: "operator"},
+        // Match compile-time variables.
+        {regex: /\$[a-zA-Z_][a-zA-Z0-9_']*/, token: "compilevar"},
+        // Match variables.
+        {regex: /[a-zA-Z_][a-zA-Z0-9_']*/, token: "neutral"},
         // Indent and dedent on list/dict literals.
         {regex: /[\{\[\(]/, indent: true},
         {regex: /[\}\]\)]/, dedent: true},
@@ -50,6 +56,31 @@ RawCodeMirror.defineSimpleMode("odelang", {
 
 const STARTING_CODE = `// Simple oscillator
 // Hit ctrl+enter to recompile
+
+$x := 1;
+
+print($x);
+
+freq ~ Slider(1, 2);
+x ~ Uniform(-1, 1);
+x'' <- -freq * x;
+
+plot x;
+simtime 10;
+
+fn index($x: [dyn], $i: int) -> dyn {
+  if $i < 0 || $i >= len($x) {
+    return 0.0;
+  }
+  return $x[$i];
+}
+
+fn second_order_upwind($x: [dyn], $i: int) -> dyn {
+  return
+    + 3*index($x, $i - 1)
+    - 4*index($x, $i + 0)
+    +   index($x, $i + 1);
+}
 
 freq ~ Slider(1, 2);
 x ~ Uniform(-1, 1);
@@ -84,12 +115,16 @@ class CodeEditor extends React.Component {
                     mode: "odelang",
                     theme: "material",
                     lineNumbers: true,
+                    indentUnit: 2,
                     extraKeys: {
                         "Ctrl-Enter": () => {
                             this.props.onCompile(this.state.code);
                         },
                         "Ctrl-S": () => {
                             
+                        },
+                        "Tab": (cm) => {
+                            cm.replaceSelection("  ", "end");
                         },
                     },
                 }}
