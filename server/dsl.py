@@ -267,19 +267,24 @@ class Context:
             "@current_plot": None,
         }
         self.always_global_variables = {"globalTime", "globalStepSize", "e", "pi"}
-        builtin_functions = {}
         for name in ["exp", "log", "cos", "sin", "sqrt", "abs", "floor", "ceil", "round"]:
-            builtin_functions[name] = [("x", "dyn")]
-        builtin_functions["min"] = builtin_functions["max"] = 1
-        for name, arg_specs in builtin_functions.items():
             # Due to Python closures just saving their enclosing scope by reference
             # we have to do this annoying trick with wrapping with another scope.
             def closure_scope(name):
                 self.root_scope[name] = Function(
                     name=name,
-                    args=arg_specs,
+                    args=[("x", "dyn")],
                     return_type="dyn",
                     body=lambda ctx, scope: Expr(LAYER_DYN, name, [scope["x"]]),
+                )
+            closure_scope(name)
+        for name in ["min", "max"]:
+            def closure_scope(name):
+                self.root_scope[name] = Function(
+                    name=name,
+                    args=1,
+                    return_type="dyn",
+                    body=lambda ctx, scope: Expr(LAYER_DYN, name, scope["@args"]),
                 )
             closure_scope(name)
         self.plots = {}
