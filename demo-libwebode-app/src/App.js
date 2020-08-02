@@ -512,27 +512,27 @@ class App extends React.Component {
                 startingPointBuffer.set(state);
 
                 // First derivative evaluation.
-                this.simData.getDerivative(this.simCtx, t, stepSize);
+                this.simData.getDerivative(this.simCtx, t, stepSize / 2);
                 derivativeBuffers[0].set(statePrime);
 
                 // Second derivative evaluation.
                 for (let i = 0; i < state.length; i++)
                     state[i] += (stepSize / 2) * statePrime[i];
-                this.simData.getDerivative(this.simCtx, t + stepSize / 2, stepSize);
+                this.simData.getDerivative(this.simCtx, t + stepSize / 2, stepSize / 2);
                 derivativeBuffers[1].set(statePrime);
 
                 // Third derivative evaluation.
                 state.set(startingPointBuffer);
                 for (let i = 0; i < state.length; i++)
                     state[i] += (stepSize / 2) * statePrime[i];
-                this.simData.getDerivative(this.simCtx, t + stepSize / 2, stepSize);
+                this.simData.getDerivative(this.simCtx, t + stepSize / 2, stepSize / 2);
                 derivativeBuffers[2].set(statePrime);
 
                 // Fourth derivative evaluation.
                 state.set(startingPointBuffer);
                 for (let i = 0; i < state.length; i++)
                     state[i] += stepSize * statePrime[i];
-                this.simData.getDerivative(this.simCtx, t, stepSize);
+                this.simData.getDerivative(this.simCtx, t, stepSize / 2);
 
                 // Final mixture.
                 state.set(startingPointBuffer);
