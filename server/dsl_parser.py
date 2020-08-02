@@ -108,7 +108,7 @@ class ParseError(SourcePositionError):
 
 class Lexer:
     def __init__(self, text):
-        self.text = text
+        self.text = text + "\xff"
         self.cursor = 0
         self.stream_pos = StreamPos()
 
@@ -224,6 +224,8 @@ class Lexer:
                         accumulated.append(self.peek())
                         self.advance()
                 tokens.append(Token("str", "".join(accumulated), self.stream_pos))
+            elif self.match("\xff"):
+                break
             else:
                 raise LexError("Unexpected character: %r" % self.peek(), self.stream_pos)
         tokens.append(Token("end_of_program", "END", self.stream_pos))

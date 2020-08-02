@@ -110,20 +110,74 @@ class Function:
         self.body = body
 
 def func_print(ctx, scope):
-    print("Print called:", scope["val"])
-    ctx.print_output.append(str(scope["val"]))
+    m = " ".join(str(i) for i in scope["@args"])
+    print("Print called:", m)
+    ctx.print_output.append(m)
 
 def func_Slider(ctx, scope):
+    args = scope["@args"]
+    if len(args) == 2:
+        ctx.type_check_assert(args[0], "float")
+        ctx.type_check_assert(args[1], "float")
+        desired_name = scope["@purpose_name"]
+        low, high = [arg.value for arg in args]
+    elif len(args) == 3:
+        ctx.type_check_assert(args[0], "str")
+        ctx.type_check_assert(args[1], "float")
+        ctx.type_check_assert(args[2], "float")
+        desired_name, low, high = [arg.value for arg in args]
     adj_var = ctx.make_adjustable_parameter(
-        desired_name=scope["@purpose_name"],
-        default_value=(scope["high"].value + scope["low"].value) / 2,
+        desired_name=desired_name,
+        default_value=(low + high) / 2,
         name_must_be_exact=False,
     )
     ctx.widgets.append({
         "kind": "slider",
         "name": adj_var.name,
-        "low": scope["low"].value,
-        "high": scope["high"].value,
+        "low": low,
+        "high": high,
+        "recomp": False,
+    })
+    return adj_var
+
+def func_Checkbox(ctx, scope):
+    args = scope["@args"]
+    if len(args) == 0:
+        desired_name = scope["@purpose_name"]
+    else:
+        ctx.type_check_assert(args[0], "str")
+        desired_name = args[0].value
+    adj_var = ctx.make_adjustable_parameter(
+        desired_name=desired_name,
+        default_value=False,
+        name_must_be_exact=False,
+    )
+    ctx.widgets.append({
+        "kind": "checkbox",
+        "name": adj_var.name,
+        "recomp": True,
+    })
+    return adj_var
+
+def func_Selector(ctx, scope):
+    args = scope["@args"]
+    # Check if the first argument is a string.
+    if args[0].LAYER != LAYER_COMPTIME:
+        ctx.interpreter_error("All arguments to Selector must be compile time")
+    if args[0].ty == str:
+        desired_name = args.pop(0).value
+    else:
+        desired_name = scope["@purpose_name"]
+    # Take the remaining arguments and select over them.
+    adj_var = ctx.make_adjustable_parameter(
+        desired_name=desired_name,
+        default_value=0,
+        name_must_be_exact=False,
+    )
+    ctx.widgets.append({
+        "kind": "selector",
+        "name": adj_var.name,
+        "recomp": True,
     })
     return adj_var
 
@@ -189,8 +243,10 @@ class Context:
         self.widgets = []
         self.print_output = []
         self.root_scope = {
-            "print": Function("print", [("val", None)], ("tuple", []), func_print),
-            "Slider": Function("Slider", [("low", "float"), ("high", "float")], "const", func_Slider),
+            "print": Function("print", 0, ("tuple", []), func_print),
+            "Slider": Function("Slider", 2, "const", func_Slider),
+            "Checkbox": Function("Checkbox", 0, "int", func_Checkbox),
+            "Selector": Function("Selector", 1, None, func_Selector),
             "Uniform": Function("Uniform", [("low", "const"), ("high", "const")], "const", func_Uniform),
             "Gaussian": Function("Gaussian", [], "const", func_Gaussian),
             "addDeriv": Function("addDeriv", [("var", "var")], "var", func_addDeriv),
@@ -248,7 +304,7 @@ class Context:
         if not isinstance(value, Datum):
             self.interpreter_error("Bug: Non-datum being type checked: %r : %r" % (value, ty))
         # Here float will accept int as a form of casting.
-        concrete_mapping = {"int": {int}, "float": {float, int}, "str": {str}}
+        concrete_mapping = {"int": {int}, "float": {float, int}, "str": {str}, "Function": {Function}}
 
         # Handle the array case.
         if isinstance(ty, tuple) and ty[0] == "list":
@@ -342,7 +398,9 @@ class Context:
             elif var_name in self.root_scope:
                 value = self.root_scope[var_name]
                 if not isinstance(value, Datum):
-                    self.interpreter_error("Function %s can't be used like a variable" % var_name)
+                    assert isinstance(value, Function)
+                    value = CompileTimeData(type(value), value)
+                #    self.interpreter_error("Function %s can't be used like a variable" % var_name)
                 return value
             self.register_variable(var_name)
             return self.all_variables[var_name]
@@ -382,24 +440,39 @@ class Context:
             )
         elif kind == "call":
             _, fn_expr, arg_exprs = expr
-            if fn_expr[0] != "var":
-                self.interpreter_error("For now only simple function calls are allowed")
-            _, fn_name = fn_expr
-            fn = self.lookup(scope, fn_name)
+            if fn_expr[0] == "var":
+                _, fn_name = fn_expr
+                fn = self.lookup(scope, fn_name)
+            else:
+                fn_obj = self.evaluate_expr(scope, fn_expr, purpose_name)
+                self.type_check_assert(fn_obj, "Function")
+                fn = fn_obj.value
+                fn_name = fn.name
+                #self.interpreter_error("For now only simple function calls are allowed")
             if isinstance(fn, Datum):
                 self.interpreter_error("%s isn't a function; do you want to drop the parens?" % fn_name)
             args = [self.evaluate_expr(scope, arg_expr, purpose_name) for arg_expr in arg_exprs]
-            # Make sure that our arguments line up.
-            if len(fn.args) != len(args):
+            # If fn.args is a number, then it's a minimum number of arguments, and there is no type-safety.
+            if isinstance(fn.args, int):
+                if len(args) < fn.args:
+                    self.interpreter_error("Function %s expected at least %i arguments, we passed %i" % (
+                        fn.name, fn.args, len(args),
+                    ))
+            elif len(fn.args) != len(args):
+                # Make sure that our arguments line up.
                 self.interpreter_error("Function %s expected %i arguments, we passed %i" % (
                     fn.name, len(fn.args), len(args),
                 ))
             subscope = scope.copy()
             subscope["@purpose_name"] = purpose_name
             subscope["@name_prefix"] = prefix_join(scope["@name_prefix"], self.get_unique(fn_name))
-            for arg, (arg_name, arg_ty_annot) in zip(args, fn.args):
-                self.type_check_assert(arg, arg_ty_annot)
-                subscope[arg_name] = arg
+            if isinstance(fn.args, int):
+                subscope["@args"] = args
+            else:
+                for arg, (arg_name, arg_ty_annot) in zip(args, fn.args):
+                    self.type_check_assert(arg, arg_ty_annot)
+                    subscope[arg_name] = arg
+            # Perform the function call.
             if isinstance(fn.body, list):
                 return self.execute(subscope, fn.body)
             else:
@@ -793,6 +866,8 @@ class Context:
                 if len(args) == 2:
                     return "(%s %s %s)" % (args[0], expr.op, args[1])
         elif isinstance(expr, CompileTimeData):
+            if isinstance(expr.value, bool):
+                return {False: "false", True: "true"}[expr.value]
             return "%r" % (expr.value,)
         self.interpreter_error("Bug: Unhandled expr in JS codegen: %r" % (expr,))
 
@@ -802,7 +877,11 @@ class Context:
         allocate_code = []
         for param_name, param in self.adjustable_parameters.items():
             allocate_code.append("parameters[%s /*%s*/] = %r;" % (
-                self.parameter_allocation[param_name], param_name, param.default_value,
+                self.parameter_allocation[param_name],
+                param_name,
+                self.codegen_js_expr(CompileTimeData(
+                    type(param.default_value), param.default_value
+                )),
             ))
         allocate_code = "\n".join(allocate_code)
 

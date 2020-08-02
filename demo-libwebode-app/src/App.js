@@ -24,11 +24,11 @@ RawCodeMirror.defineSimpleMode("odelang", {
         // Match strings.
         {regex: /"(?:[^\\]|\\.)*?(?:"|$)/, token: "string"},
         // Match keywords.
-        {regex: /(?:javascript|array|global|fn|as|for|in|if|else|return|native|var|dyn|const|int|float|plot|title|trace|trace2d|layout|simoptions)\b/, token: "keyword"},
+        {regex: /(?:javascript|array|global|fn|as|for|in|if|else|return|native|var|dyn|const|int|float|Function|plot|title|trace|trace2d|layout|simoptions)\b/, token: "keyword"},
         // Match initialization and driving.
         {regex: /~|<-/, token: "drive"},
         // Match built-ins.
-        {regex: /(?:Uniform|Slider|Gaussian|WienerProcess|WienerDerivative|D|Integrate|exp|log|sin|cos|sqrt|abs|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
+        {regex: /(?:Uniform|Slider|Selector|Checkbox|Gaussian|WienerProcess|WienerDerivative|D|Integrate|exp|log|sin|cos|sqrt|abs|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
         {regex: /(?:globalTime|globalStepSize|e|pi|tolerance|stepsize|plotperiod|integrator|simtime)\b/, token: "atom"},
         // Match embedded javascript.
         //{regex: /javascript\s{/, token: "meta", mode: {spec: "javascript", end: /}/}},
@@ -372,20 +372,20 @@ class ResultsWindow extends React.Component {
     }
 
     renderWidget(widgetSpec) {
+        const textStyle = {
+            color: "white",
+            marginLeft: "10px",
+            marginRight: "10px",
+            marginTop: "-5px",
+            marginBottom: "-5px",
+            // Lift the text up a little to line up with the range input.
+            // The display: inline-block is required to make transform work.
+            display: "inline-block",
+            fontFamily: "monospace",
+            fontSize: "130%",
+        };
+        const liftedTextStyle = {...textStyle, transform: "translateY(-25%)"};
         if (widgetSpec.kind === "slider") {
-            const liftedTextStyle = {
-                color: "white",
-                marginLeft: "10px",
-                marginRight: "10px",
-                marginTop: "-5px",
-                marginBottom: "-5px",
-                // Lift the text up a little to line up with the range input.
-                // The display: inline-block is required to make transform work.
-                transform: "translateY(-25%)",
-                display: "inline-block",
-                fontFamily: "monospace",
-                fontSize: "130%",
-            };
             const value = this.getWidgetValue(widgetSpec.name, (widgetSpec.low + widgetSpec.high) / 2);
             const step = (widgetSpec.high - widgetSpec.low) / 1000;
             // Try to guess a reasonable fixed width.
@@ -407,7 +407,24 @@ class ResultsWindow extends React.Component {
                     onChange={(event) => { this.updateWidgetValue(widgetSpec.name, event.target.value); }}
                 />
                 <span style={{...liftedTextStyle, whiteSpace: "pre-wrap"}}>({String(value).padStart(fixedWidth)}) [{widgetSpec.low} - {widgetSpec.high}]</span>
-            </div>
+            </div>;
+        } else if (widgetSpec.kind === "checkbox") {
+            const value = this.getWidgetValue(widgetSpec.name, false);
+            return <div style={{
+                border: "2px solid black",
+                borderRadius: "10px",
+                backgroundColor: "#555",
+                padding: "10px",
+                verticalAlign: "middle",
+            }}>
+                <span style={textStyle}>{widgetSpec.name}:</span>
+                <input
+                    type="checkbox"
+                    value={value}
+                    onChange={(event) => { this.updateWidgetValue(widgetSpec.name, event.target.value); }}
+                    style={{transform: "scale(1.5)"}}
+                />
+            </div>;
         }
         return <div style={{backgroundColor: "#833"}}>Bad widget spec: <code>{JSON.stringify(widgetSpec)}</code></div>;
     }
@@ -573,7 +590,7 @@ class App extends React.Component {
         if (this.simData === null)
             return;
         if (!this.simData.parameterTable.hasOwnProperty(name)) {
-            this.setDialog("BUG BUG BUG: Attempt to set invalid parameter: " + name);
+            //this.setDialog("BUG BUG BUG: Attempt to set invalid parameter: " + name);
             return;
         }
         this.simCtx.parameters[this.simData.parameterTable[name]] = value;
