@@ -28,7 +28,7 @@ RawCodeMirror.defineSimpleMode("odelang", {
         // Match initialization and driving.
         {regex: /~|<-/, token: "drive"},
         // Match built-ins.
-        {regex: /(?:Uniform|Slider|Selector|Checkbox|Gaussian|WienerProcess|WienerDerivative|D|Integrate|exp|log|sin|cos|sqrt|abs|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
+        {regex: /(?:Uniform|Slider|Selector|Checkbox|Gaussian|WienerProcess|WienerDerivative|D|Integrate|exp|log|sin|cos|sqrt|abs|floor|ceil|round|min|max|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
         {regex: /(?:globalTime|globalStepSize|e|pi|tolerance|stepsize|plotperiod|integrator|simtime)\b/, token: "atom"},
         // Match embedded javascript.
         //{regex: /javascript\s{/, token: "meta", mode: {spec: "javascript", end: /}/}},

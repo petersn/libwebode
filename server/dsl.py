@@ -267,13 +267,17 @@ class Context:
             "@current_plot": None,
         }
         self.always_global_variables = {"globalTime", "globalStepSize", "e", "pi"}
-        for name in ["exp", "log", "cos", "sin", "sqrt", "abs"]:
+        builtin_functions = {}
+        for name in ["exp", "log", "cos", "sin", "sqrt", "abs", "floor", "ceil", "round"]:
+            builtin_functions[name] = [("x", "dyn")]
+        builtin_functions["min"] = builtin_functions["max"] = 1
+        for name, arg_specs in builtin_functions.items():
             # Due to Python closures just saving their enclosing scope by reference
             # we have to do this annoying trick with wrapping with another scope.
             def closure_scope(name):
                 self.root_scope[name] = Function(
                     name=name,
-                    args=[("x", "dyn")],
+                    args=arg_specs,
                     return_type="dyn",
                     body=lambda ctx, scope: Expr(LAYER_DYN, name, [scope["x"]]),
                 )
@@ -862,6 +866,11 @@ class Context:
                 "cos": "Math.cos",
                 "sqrt": "Math.sqrt",
                 "abs": "Math.abs",
+                "floor": "Math.floor",
+                "ceil": "Math.ceil",
+                "round": "Math.round",
+                "min": "Math.min",
+                "max": "Math.max",
             }
             pass_through_operators = {"+", "-", "*", "/", "%"}
             if expr.op in fn_table:
