@@ -289,9 +289,9 @@ class Context:
             closure_scope(name)
         self.plots = {}
         self.settings = {
-            "integrator": "euler",
+            "integrator": "rk4",
             "tolerance": 1e-2,
-            "stepsize": 1e-2,
+            "stepsize": 1e-1,
             "plotperiod": 0.02,
             "simtime": 10.0,
         }
