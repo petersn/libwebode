@@ -7,6 +7,7 @@ import tornado
 import tornado.ioloop
 import tornado.web
 import dsl_parser
+import dsl
 
 class AllowCORS:
     def set_default_headers(self):
@@ -22,18 +23,33 @@ class CompileHandler(AllowCORS, tornado.web.RequestHandler):
     def post(self):
         payload = json.loads(self.request.body)
         try:
-            tokens = dsl_parser.lex(payload["code"])
-        except dsl_parser.LexError as lex_error:
+            ast = dsl_parser.parse(payload["code"])
+            ctx = dsl.Context()
+            ctx.execute(None, ast)
+            js = ctx.codegen_js()
+        except dsl_parser.SourcePositionError as error:
+            print("%s Error: %s" % (error.NAME, error.args[0]))
             self.write(json.dumps({
                 "error": True,
-                "line_number": lex_error.line_number,
-                "column_number": lex_error.column_number,
-                "message": lex_error.args[0],
+                "line_number": error.stream_pos.line_number,
+                "column_number": error.stream_pos.column_number,
+                "message": "%s Error: %s" % (error.NAME, error.args[0]),
             }))
             return
-        print(tokens)
+        except Exception as error:
+            print("Unhandled error:", error)
+            self.write(json.dumps({
+                "error": True,
+                "line_number": -1,
+                "column_number": -1,
+                "message": "Compiler bug: %s" % (error,),
+            }))
+            raise
+            #return
+        print(js)
         self.write(json.dumps({
             "error": False,
+            "js": js,
         }))
 
 def make_app():

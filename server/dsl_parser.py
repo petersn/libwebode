@@ -11,7 +11,7 @@ def valid_identifier(s):
     return s and s[0] in identifier_start_chars and all(c in identifier_chars for c in s)
 
 whitespace = set(" \t\n")
-symbol_characters = set("()[]{}.,?=+-*/%:<>!;|&~")
+symbol_characters = set("()[]{}.,?=+-*/%:<>!;|&~^")
 length_two_symbols = {
     "<=", ">=", "==", "!=",
     "+=", "-=", "*=", "/=", "%=",
@@ -19,7 +19,7 @@ length_two_symbols = {
     "<-", "->", "||", "&&",
 }
 keywords = {
-    "fn", "as", "for", "in", "if", "else", "return", "native",
+    "fn", "as", "for", "in", "if", "else", "return", "native", "javascript",
     "var", "dyn", "const", "int", "float",
     "plot", "tolerance", "simtime",
 }
@@ -57,6 +57,7 @@ class Token:
         "keyword": COLOR_PURPLE,
         "var": COLOR_BLUE,
         "compvar": COLOR_TEAL,
+        "javascript": COLOR_RED,
         #"symbol": ...,
         "end_of_program": COLOR_RED,
     }
@@ -140,11 +141,11 @@ class Lexer:
             if self.peek() in whitespace:
                 self.advance()
             elif self.match("//"):
-                while self.cursor < len(s) and not self.match("\n"):
+                while self.cursor < len(self.text) and not self.match("\n"):
                     self.advance()
             elif self.match("/*"):
                 counter = 1
-                while self.cursor < len(s):
+                while counter and self.cursor < len(self.text):
                     if self.match("/*"):
                         counter += 1
                     elif self.match("*/"):
@@ -164,7 +165,25 @@ class Lexer:
                     kind = "compvar"
                 elif span in keywords:
                     kind = "keyword"
-                tokens.append(Token(kind, span, self.stream_pos))
+                # Check if this is the javascript keyword, and if so parse a lexum of ECMAScript.
+                if span == "javascript":
+                    while self.peek() in whitespace:
+                        self.advance()
+                    if not self.match("{"):
+                        raise LexError("javascript keyword must be followed by {", self.stream_pos)
+                    js_start = self.cursor
+                    brace_count = 1
+                    while brace_count:
+                        # BUG: We don't properly check if we're in a string right now.
+                        if self.peek() == "{":
+                            brace_count += 1
+                        elif self.peek() == "}":
+                            brace_count -= 1
+                        self.advance()
+                    js_span = self.text[js_start:self.cursor]
+                    tokens.append(Token("javascript", span, self.stream_pos))
+                else:
+                    tokens.append(Token(kind, span, self.stream_pos))
             elif self.text[self.cursor : self.cursor+2] in length_two_symbols:
                 tokens.append(Token("symbol", self.text[self.cursor : self.cursor+2], self.stream_pos))
                 self.advance(2)
@@ -435,6 +454,8 @@ class Parser:
             return_value = self.parse_expr()
             self.expect(("symbol", ";"))
             return "return", return_value
+        if self.peek().kind == "javascript":
+            return "javascript", self.get_token()
 
         e = self.parse_expr()
         self.expect(("symbol", ";"))

@@ -24,11 +24,14 @@ RawCodeMirror.defineSimpleMode("odelang", {
         // Match strings.
         {regex: /"(?:[^\\]|\\.)*?(?:"|$)/, token: "string"},
         // Match keywords.
-        {regex: /(?:fn|as|for|in|if|else|return|native|var|dyn|const|int|float|plot|tolerance|simtime)\b/, token: "keyword"},
+        {regex: /(?:javascript|fn|as|for|in|if|else|return|native|var|dyn|const|int|float|plot|tolerance|simtime)\b/, token: "keyword"},
         // Match initialization and driving.
         {regex: /~|<-/, token: "drive"},
         // Match built-ins.
-        {regex: /(?:Uniform|Slider|Normal|exp|sin|cos|len|index_interpolating|print)\b/, token: "builtin"},
+        {regex: /(?:Uniform|Slider|Gaussian|WienerProcess|WienerDerivative|exp|log|sin|cos|sqrt|abs|len|index_interpolating|print)\b/, token: "builtin"},
+        {regex: /(?:globalTime|globalStepSize|e|pi)\b/, token: "atom"},
+        // Match embedded javascript.
+        //{regex: /javascript\s{/, token: "meta", mode: {spec: "javascript", end: /}/}},
         // Match numbers.
         {regex: /0x[a-f\d]+|[-+]?(?:\.\d+|\d+\.?\d*)(?:e[-+]?\d+)?/i, token: "number"},
         // Handle comments.
@@ -57,6 +60,27 @@ RawCodeMirror.defineSimpleMode("odelang", {
 const STARTING_CODE = `// Simple oscillator
 // Hit ctrl+enter to recompile
 
+/*
+freq <- Slider(1, 2);
+x ~ Uniform(-1, 1);
+x'' <- -freq * x;
+*/
+
+fn ewma($x: dyn, $timeConstant: dyn) -> dyn {
+    result ~ 0;
+    result' <- ($x - result) / $timeConstant;
+    return result;
+}
+
+x' <- WienerDerivative();
+y <- ewma(x, 1.0);
+
+plot x;
+plot y;
+simtime 10;
+`;
+
+/*
 $x := 1;
 
 print($x);
@@ -82,13 +106,20 @@ fn second_order_upwind($x: [dyn], $i: int) -> dyn {
     +   index($x, $i + 1);
 }
 
+fn ewma($x: dyn, $smoothing: float) -> dyn {
+    result ~ 0;
+    // Using (1 / $smoothing) here allows constant folding to help out.
+    result' <- ($x - result) * (1 / $smoothing);
+    return result;
+}
+
 freq ~ Slider(1, 2);
 x ~ Uniform(-1, 1);
 x'' <- -freq * x;
 
 plot x;
 simtime 10;
-`;
+*/
 
 class CodeEditor extends React.Component {
     constructor() {
@@ -138,21 +169,28 @@ class CodeEditor extends React.Component {
     }
 }
 
+/*
+[
+                        {
+                            x: [1, 2, 3],
+                            y: [2, 6, 3],
+                            type: 'scatter',
+                            mode: 'lines+markers',
+                            marker: {color: 'red'},
+                        },
+                        {type: 'bar', x: [1, 2, 3], y: [2, 5, 3]},
+                    ]
+
+{width: 320, height: 240, title: 'A Fancy Plot'}
+*/
+
 class ResultsWindow extends React.Component {
     render() {
-        return <Plot
-            data={[
-            {
-                x: [1, 2, 3],
-                y: [2, 6, 3],
-                type: 'scatter',
-                mode: 'lines+markers',
-                marker: {color: 'red'},
-            },
-            {type: 'bar', x: [1, 2, 3], y: [2, 5, 3]},
-            ]}
-            layout={ {width: 320, height: 240, title: 'A Fancy Plot'} }
-        />;
+        return <div>
+            {this.props.plotSpecs.map((plotSpec, i) =>
+                <Plot data={plotSpec.data} layout={plotSpec.layout} key={i}/>
+            )}
+        </div>;
     }
 }
 
@@ -162,7 +200,7 @@ class App extends React.Component {
     constructor() {
         super();
         this.editorRef = React.createRef();
-        this.state = {val: -1};
+        this.state = {val: -1, plotSpecs: []};
     }
 
     componentDidMount() {
@@ -175,19 +213,52 @@ class App extends React.Component {
         this.forceUpdate();
     }
 
+    async rerunSimulation(simData) {
+        const ctx = simData.allocate();
+        simData.initialize(ctx);
+        let t = 0.0;
+        const stepSize = Math.max(1e-3, simData.settings.tolerance);
+        const {state, statePrime} = ctx;
+        simData.extractPlotDatum(ctx, t, stepSize);
+        while (t < simData.settings.simtime) {
+            // Do a first-order Euler step.
+            simData.getDerivative(ctx, t, stepSize);
+            for (let i = 0; i < state.length; i++)
+                state[i] += stepSize * statePrime[i];
+            t += stepSize;
+            simData.extractPlotDatum(ctx, t, stepSize);
+        }
+        console.log(ctx.plotData);
+        const plotSpecs = [];
+        for (const plotName of Object.keys(simData.plots)) {
+            const plot = simData.plots[plotName];
+            console.log("Plot:", plot);
+            plotSpecs.push({
+                data: [
+                    {
+                        ...ctx.plotData[plotName],
+                        type: 'scatter',
+                        mode: 'lines',
+                    },
+                ],
+                layout: {width: 500, height: 300, title: plotName},
+            });
+        }
+        this.setState({plotSpecs});
+    }
+
     onCompile = async (code) => {
         const response = await fetch(SERVER_HOST + "/compile", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({
-                code,
-            }),
+            body: JSON.stringify({code}),
         });
         const result = await response.json();
-        console.log(result);
         if (result.error) {
-            if (this.editorRef.current)
+            if (this.editorRef.current && result.line_number !== -1)
                 this.editorRef.current.moveCursor(result.line_number - 1, result.column_number - 1);
+        } else {
+            this.rerunSimulation(eval(result.js));
         }
     }
 
@@ -206,7 +277,7 @@ class App extends React.Component {
             </div>
             <div style={{
             }}>
-                <ResultsWindow/>
+                <ResultsWindow plotSpecs={this.state.plotSpecs}/>
             </div>
         </div>;
     }
