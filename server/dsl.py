@@ -193,11 +193,15 @@ def func_Gaussian(ctx, scope):
 
 def func_addDeriv(ctx, scope):
     var = scope["var"]
-    raise ctx.interpreter_error("addDeriv not quite implemented yet, but it should be easy given 15 minutes")
+    ctx.register_variable(var.name + "'")
+    return ctx.all_variables[var.name + "'"]
 
 def func_subDeriv(ctx, scope):
     var = scope["var"]
-    raise ctx.interpreter_error("subDeriv not quite implemented yet, but it should be easy given 15 minutes")
+    base_name, ticks = split_variable_name(var.name)
+    if not ticks:
+        ctx.interpreter_error("subDeriv called on already zeroth order variable: %s" % base_name)
+    return ctx.all_variables[base_name + ticks[1:]]
 
 def func_WienerDerivative(ctx, scope):
     return Expr(LAYER_DYN, "WienerDerivative", [])
