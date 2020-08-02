@@ -263,7 +263,7 @@ class Context:
             "@name_prefix": "",
             "@current_plot": None,
         }
-        for name in ["exp", "log", "cos", "sin", "sqrt", "abs"]:
+        for name in ["exp", "log", "cos", "sin", "sqrt", "abs", "floor"]:
             # Due to Python closures just saving their enclosing scope by reference
             # we have to do this annoying trick with wrapping with another scope.
             def closure_scope(name):
@@ -856,6 +856,7 @@ class Context:
                 "cos": "Math.cos",
                 "sqrt": "Math.sqrt",
                 "abs": "Math.abs",
+                "floor": "Math.floor",
             }
             pass_through_operators = {"+", "-", "*", "/", "%"}
             if expr.op in fn_table:
