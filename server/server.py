@@ -3,6 +3,7 @@ libwebode exploration server
 """
 
 import json
+import traceback
 import tornado
 import tornado.ioloop
 import tornado.web
@@ -22,9 +23,9 @@ class AllowCORS:
 class CompileHandler(AllowCORS, tornado.web.RequestHandler):
     def post(self):
         payload = json.loads(self.request.body)
+        ctx = dsl.Context()
         try:
             ast = dsl_parser.parse(payload["code"])
-            ctx = dsl.Context()
             ctx.execute(None, ast)
             js = ctx.codegen_js()
         except dsl_parser.SourcePositionError as error:
@@ -34,22 +35,25 @@ class CompileHandler(AllowCORS, tornado.web.RequestHandler):
                 "line_number": error.stream_pos.line_number,
                 "column_number": error.stream_pos.column_number,
                 "message": "%s Error: %s" % (error.NAME, error.args[0]),
+                "print_output": "\n".join(ctx.print_output),
             }))
             return
         except Exception as error:
             print("Unhandled error:", error)
+            traceback.print_exc()
             self.write(json.dumps({
                 "error": True,
                 "line_number": -1,
                 "column_number": -1,
                 "message": "Compiler bug: %s" % (error,),
+                "print_output": "\n".join(ctx.print_output),
             }))
-            raise
-            #return
+            return
         print(js)
         self.write(json.dumps({
             "error": False,
             "js": js,
+            "print_output": "\n".join(ctx.print_output),
         }))
 
 def make_app():

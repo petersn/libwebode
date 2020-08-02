@@ -20,8 +20,8 @@ length_two_symbols = {
 }
 keywords = {
     "fn", "as", "for", "in", "if", "else", "return", "native", "javascript",
-    "var", "dyn", "const", "int", "float",
-    "plot", "tolerance", "simtime",
+    "var", "dyn", "const", "int", "float", "array",
+    "plot", "title", "trace", "trace2d", "layout", "simoptions",
 }
 escape_table = {
     "\\": "\\",
@@ -329,15 +329,14 @@ class Parser:
             return self.peek().kind, self.get_token().contents
         raise self.parse_error("Expected expression")
 
-    def parse_expression_tight(self):
-        e = self.parse_expression_atom()
+    def parse_expression_postfixes(self, e):
         while True:
             if self.match(("symbol", "(")):
                 e = "call", e, self.parse_comma_separated_until(self.parse_expr, ("symbol", ")"))
             elif self.match(("symbol", "[")):
                 index = self.parse_expr()
                 self.expect(("symbol", "]"))
-                e = "bin-op", "[]", e, index
+                e = "binary-op", "[]", e, index
             elif self.match(("symbol", ".")):
                 e = "dot", e, self.parse_var()
             else:
@@ -351,12 +350,13 @@ class Parser:
         if self.match(("symbol", "(")):
             e = self.parse_expr()
             self.expect(("symbol", ")"))
+            e = self.parse_expression_postfixes(e)
         elif is_operator(self.peek(), unary_operators):
             operator = self.get_token()
             e = self.parse_expr(unary_operators[operator.contents])
             e = "unary-op", operator.contents, e
         else:
-            e = self.parse_expression_tight()
+            e = self.parse_expression_postfixes(self.parse_expression_atom())
 
         while True:
             if not is_operator(self.peek(), binary_operators):
@@ -393,20 +393,60 @@ class Parser:
         self.expect(("symbol", "{"))
         return self.parse_repeated_until(self.parse_statement, ("symbol", "}"))
 
+    def parse_jsonlike_number(self):
+        multiplier = +1
+        for symbol, sign in {"+": +1, "-": -1}.items():
+            if self.match(("symbol", symbol)):
+                multiplier = sign
+                break
+        token = self.get_token()
+        if token.kind not in ("int", "float"):
+            raise self.parse_error("Invalid json-like data")
+        return multiplier * token.contents
+
+    def parse_jsonlike_dict_entry(self):
+        if self.peek().kind == "str":
+            key = self.get_token().contents
+        else:
+            key = self.parse_var()
+        self.expect(("symbol", ":"))
+        value = self.parse_jsonlike_data()
+        return key, value
+
+    def parse_jsonlike_data(self):
+        if self.match(("symbol", "[")):
+            return self.parse_comma_separated_until(self.parse_jsonlike_data, ("symbol", "]"))
+        if self.match(("symbol", "{")):
+            return dict(self.parse_comma_separated_until(self.parse_jsonlike_dict_entry, ("symbol", "}")))
+        if self.peek().kind == "str":
+            return self.get_token().contents
+        if self.peek().kind == "var" and self.peek().contents in ("true", "false", "null"):
+            return {"true": True, "false": False, "null": None}[self.get_token().contents]
+        return self.parse_jsonlike_number()
+
     def parse_statement(self):
         if self.peek().stream_pos.line_number != self.last_seen_line_number:
             ln = self.peek().stream_pos.line_number
             self.last_seen_line_number = ln
             return "line", ln
         if self.match(("keyword", "plot")):
-            return "plot", self.parse_comma_separated_until(self.parse_expr, ("symbol", ";"))
-        if self.match(("keyword", "tolerance")) or self.match(("keyword", "simtime")):
-            keyword_name = self.peek(-1).contents
-            tol = self.get_token()
-            if tol.kind not in ("int", "float"):
-                raise ParseError("Invalid %s: %r" % (keyword_name, tol,), tol.stream_pos)
+            # Check for complex plots.
+            if self.peek() == ("symbol", "{"):
+                body = self.parse_block()
+                return "complex-plot", body
+            return "simple-plot", self.parse_comma_separated_until(self.parse_expr, ("symbol", ";"))
+        if self.match(("keyword", "trace")):
+            return "trace", self.parse_expr(), self.parse_jsonlike_data()
+        if self.match(("keyword", "trace2d")):
+            return "trace2d", self.parse_expr(), self.parse_expr(), self.parse_jsonlike_data()
+        if self.match(("keyword", "layout")):
+            return "layout", self.parse_jsonlike_data()
+        if self.match(("keyword", "title")):
+            expr = self.parse_expr()
             self.expect(("symbol", ";"))
-            return keyword_name, tol.contents
+            return "title", expr
+        if self.match(("keyword", "simoptions")):
+            return "simoptions", self.parse_jsonlike_data()
         if self.match(("keyword", "fn")):
             function_name = self.parse_var()
             self.expect(("symbol", "("))
@@ -419,10 +459,15 @@ class Parser:
                 "return_type": return_type,
                 "body": body,
             }
-        if self.peek().kind == "var" and self.peek(+1) in [("symbol", ":"), ("symbol", ":=")]:
-            var_name = self.parse_var()
-            type_ascription = self.parse_type() if self.match(("symbol", ":")) else None
-            initializer     = self.parse_expr() if self.match(("symbol", ":=")) else None
+        if self.peek().kind == "compvar" and self.peek(+1) in [("symbol", ":"), ("symbol", ":=")]:
+            var_name = self.parse_compvar()
+            type_ascription = None
+            if self.match(("symbol", ":")):
+                type_ascription = self.parse_type()
+                self.expect(("symbol", "="))
+            else:
+                self.expect(("symbol", ":="))
+            initializer     = self.parse_expr()
             self.expect(("symbol", ";"))
             return "let", {
                 "name": var_name,
@@ -454,6 +499,24 @@ class Parser:
             return_value = self.parse_expr()
             self.expect(("symbol", ";"))
             return "return", return_value
+        if self.match(("keyword", "for")):
+            var_name = self.parse_compvar()
+            self.expect(("keyword", "in"))
+            iterator = self.parse_expr()
+            body = self.parse_block()
+            return "for", {
+                "name": var_name,
+                "iterator": iterator,
+                "body": body,
+            }
+        if self.match(("keyword", "array")):
+            declaration = self.parse_expr()
+            print(declaration)
+            if declaration[:2] != ("binary-op", "[]"):
+                raise self.parse_error("array declarations must be like: array var[num];")
+            self.expect(("symbol", ";"))
+            _, _, var_expr, count_expr = declaration
+            return "array", var_expr, count_expr
         if self.peek().kind == "javascript":
             return "javascript", self.get_token()
 

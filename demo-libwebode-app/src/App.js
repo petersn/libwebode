@@ -24,12 +24,12 @@ RawCodeMirror.defineSimpleMode("odelang", {
         // Match strings.
         {regex: /"(?:[^\\]|\\.)*?(?:"|$)/, token: "string"},
         // Match keywords.
-        {regex: /(?:javascript|global|fn|as|for|in|if|else|return|native|var|dyn|const|int|float|plot|tolerance|simtime)\b/, token: "keyword"},
+        {regex: /(?:javascript|array|global|fn|as|for|in|if|else|return|native|var|dyn|const|int|float|plot|title|trace|trace2d|layout|simoptions)\b/, token: "keyword"},
         // Match initialization and driving.
         {regex: /~|<-/, token: "drive"},
         // Match built-ins.
-        {regex: /(?:Uniform|Slider|Gaussian|WienerProcess|WienerDerivative|exp|log|sin|cos|sqrt|abs|len|index_interpolating|print)\b/, token: "builtin"},
-        {regex: /(?:globalTime|globalStepSize|e|pi)\b/, token: "atom"},
+        {regex: /(?:Uniform|Slider|Gaussian|WienerProcess|WienerDerivative|D|Integrate|exp|log|sin|cos|sqrt|abs|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
+        {regex: /(?:globalTime|globalStepSize|e|pi|tolerance|stepsize|integrator|simtime)\b/, token: "atom"},
         // Match embedded javascript.
         //{regex: /javascript\s{/, token: "meta", mode: {spec: "javascript", end: /}/}},
         // Match numbers.
@@ -65,6 +65,8 @@ x ~ Uniform(-1, 1);
 x'' <- -freq * x;
 */
 
+$N := 4;
+
 cycle ~ 1;
 cycle'' <- -cycle * Slider(0, 2);
 plot cycle;
@@ -81,12 +83,31 @@ fn ewma($x: dyn, $timeConstant: dyn) -> dyn {
   return result;
 }
 
-x' <- WienerDerivative();
-y <- ewma(x, 1.0);
+array x[4];
 
-plot x;
-plot y;
-simtime 10;
+for $i in 0 .. $N {
+  x[$i] ~ $i;
+  x'[$i] <- -x[$i];
+}
+
+plot {
+  title "Heatmap";
+  trace2d x 0.1 {}
+}
+
+//x <- WienerProcess();
+
+//x' <- WienerDerivative();
+//y <- ewma(x, 1.0);
+
+//plot x;
+//plot y;
+
+simoptions {
+  integrator: "euler",
+  stepsize: 1e-2,
+  simtime: 10,
+}
 `;
 
 /*
@@ -244,8 +265,9 @@ class CodeEditor extends React.Component {
                     zIndex: 20,
                     opacity: this.state.showDialog ? 1 : 0,
                     transition: "opacity 0.15s ease-in-out",
+                    whiteSpace: "pre-wrap",
                 }}>
-                    <pre style={{margin: "0px"}}>{this.state.dialogMessage}</pre>
+                    {this.state.dialogMessage}
                 </div>
             }
         </div>;
@@ -305,6 +327,8 @@ class ResultsWindow extends React.Component {
             };
             const value = this.getWidgetValue(widgetSpec.name, (widgetSpec.low + widgetSpec.high) / 2);
             const step = (widgetSpec.high - widgetSpec.low) / 1000;
+            // Try to guess a reasonable fixed width.
+            const fixedWidth = String(widgetSpec.high - step).length;
             return <div style={{
                 border: "2px solid black",
                 borderRadius: "10px",
@@ -321,7 +345,7 @@ class ResultsWindow extends React.Component {
                     step={step}
                     onChange={(event) => { this.updateWidgetValue(widgetSpec.name, event.target.value); }}
                 />
-                <span style={liftedTextStyle}>({value}) [{widgetSpec.low} - {widgetSpec.high}]</span>
+                <span style={{...liftedTextStyle, whiteSpace: "pre-wrap"}}>({String(value).padStart(fixedWidth)}) [{widgetSpec.low} - {widgetSpec.high}]</span>
             </div>
         }
         return <div style={{backgroundColor: "#833"}}>Bad widget spec: <code>{JSON.stringify(widgetSpec)}</code></div>;
@@ -339,7 +363,7 @@ class ResultsWindow extends React.Component {
         };
         return <div style={{display: "flex", flexDirection: "column"}}>
             <div style={boxStyle}>
-                {this.props.plotSpecs.map((plotSpec, i) =>
+                {this.props.plotStructs.map((plotSpec, i) =>
                     <div key={i} style={{margin: "2px"}}>
                         <Plot data={plotSpec.data} layout={plotSpec.layout}/>
                     </div>
@@ -347,7 +371,7 @@ class ResultsWindow extends React.Component {
             </div>
             <div style={{...boxStyle, marginTop: "10px"}}>
                 {this.props.widgetSpecs.map((widgetSpec, i) =>
-                    <div key={i}>
+                    <div key={i} style={{margin: "5px"}}>
                         {this.renderWidget(widgetSpec)}
                     </div>
                 )}
@@ -363,7 +387,7 @@ class App extends React.Component {
         super();
         this.editorRef = React.createRef();
         this.parametersRef = React.createRef();
-        this.state = {val: -1, plotSpecs: [], widgetSpecs: []};
+        this.state = {val: -1, plotStructs: [], widgetSpecs: []};
         this.simData = null;
         this.simCtx = null;
         this.simRNGStartingState = null;
@@ -390,6 +414,10 @@ class App extends React.Component {
     async rerunSimulation(reseed) {
         if (this.simData === null)
             return;
+        if (this.simData.settings.integrator !== "euler") {
+            this.setDialog("Unsupported integrator " + this.simData.settings.integrator + ", must select one of: euler");
+            return;
+        }
         if (reseed) {
             this.simData.reseedRNG();
             this.simRNGStartingState = this.simData.getRNGState();
@@ -398,7 +426,7 @@ class App extends React.Component {
         }
         this.simData.initialize(this.simCtx);
         let t = 0.0;
-        const stepSize = Math.max(1e-3, this.simData.settings.tolerance);
+        const stepSize = Math.max(1e-6, this.simData.settings.stepsize);
         const {state, statePrime} = this.simCtx;
         // This first getDerivative is to fill in zeroth order variables for plotting.
         this.simData.getDerivative(this.simCtx, t, stepSize);
@@ -412,34 +440,19 @@ class App extends React.Component {
             this.simData.extractPlotDatum(this.simCtx, t, stepSize);
         }
         console.log(this.simCtx.plotData);
-        const plotSpecs = [];
+        const plotStructs = [];
         for (const plotName of Object.keys(this.simData.plots)) {
-            const plot = this.simData.plots[plotName];
-            plotSpecs.push({
-                data: [
-                    {
-                        ...this.simCtx.plotData[plotName],
-                        type: 'scatter',
-                        mode: 'lines',
-                    },
-                ],
-                layout: {
-                    width: 500,
-                    height: 300,
-                    title: plotName,
-                    margin: {
-                        l: 30,
-                        r: 30,
-                        b: 30,
-                        t: 30,
-                        pad: 4,
-                    },
-                    plot_bgcolor: "#eee",
-                    paper_bgcolor: "#eee",
-                },
+            const plotSpec = this.simData.plots[plotName];
+            // The plotSpec has two fields, dataTemplates, and layout.
+            plotStructs.push({
+                data: plotSpec.dataTemplates.map((dataTemplate, i) => ({
+                    ...this.simCtx.plotData[plotName][i],
+                    ...dataTemplate,
+                })),
+                layout: plotSpec.layout,
             });
         }
-        this.setState({plotSpecs, widgetSpecs: this.simData.widgets});
+        this.setState({plotStructs, widgetSpecs: this.simData.widgets});
     }
 
     setDialog(message, timeout) {
@@ -478,9 +491,17 @@ class App extends React.Component {
                     this.editorRef.current.moveCursor(result.line_number - 1, result.column_number - 1);
                 }
                 errorMessage += "\n(press esc to clear)";
+                if (result.print_output !== "")
+                    errorMessage = "Before the error, we printed:\n" + result.print_output + "\n\n" + errorMessage;
                 this.setDialog(errorMessage);
             }
         } else {
+            if (result.print_output !== "") {
+                this.setDialog(result.print_output);
+            } else {
+                // We were successful, so clear the messages.
+                this.setDialog(null);
+            }
             // Update the most recently successfully compiled code.
             if (this.editorRef.current)
                 this.editorRef.current.setState({lastCompiledCode: code});
@@ -510,7 +531,7 @@ class App extends React.Component {
                 <ResultsWindow
                     parent={this}
                     widgetSpecs={this.state.widgetSpecs}
-                    plotSpecs={this.state.plotSpecs}
+                    plotStructs={this.state.plotStructs}
                     ref={this.parametersRef}
                 />
             </div>
