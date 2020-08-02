@@ -169,6 +169,8 @@ def func_Selector(ctx, scope):
     else:
         desired_name = scope["@purpose_name"]
     # Take the remaining arguments and select over them.
+    for arg in args:
+        ctx.type_check_assert(arg, "Function")
     adj_var = ctx.make_adjustable_parameter(
         desired_name=desired_name,
         default_value=0,
@@ -177,6 +179,7 @@ def func_Selector(ctx, scope):
     ctx.widgets.append({
         "kind": "selector",
         "name": adj_var.name,
+        "selections": [arg.value.name for arg in args],
         "recomp": True,
     })
     return adj_var
@@ -263,6 +266,7 @@ class Context:
             "@name_prefix": "",
             "@current_plot": None,
         }
+        self.always_global_variables = {"globalTime", "globalStepSize", "e", "pi"}
         for name in ["exp", "log", "cos", "sin", "sqrt", "abs"]:
             # Due to Python closures just saving their enclosing scope by reference
             # we have to do this annoying trick with wrapping with another scope.
@@ -390,7 +394,9 @@ class Context:
         kind = expr[0]
         if kind == "var":
             _, var_name = expr
-            var_name = prefix_join(scope["@name_prefix"], var_name)
+            # Check if the variable is exempt from namespacing due to always being global.
+            if var_name not in self.always_global_variables:
+                var_name = prefix_join(scope["@name_prefix"], var_name)
             # Check if this is an array variable.
             base_var_name, _ = split_variable_name(var_name)
             if base_var_name in self.array_variables:

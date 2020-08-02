@@ -385,18 +385,20 @@ class ResultsWindow extends React.Component {
             fontSize: "130%",
         };
         const liftedTextStyle = {...textStyle, transform: "translateY(-25%)"};
+        const widgetBoxStyle = {
+            height: "22px",
+            border: "2px solid black",
+            borderRadius: "10px",
+            backgroundColor: "#555",
+            padding: "10px",
+            verticalAlign: "middle",
+        };
         if (widgetSpec.kind === "slider") {
             const value = this.getWidgetValue(widgetSpec.name, (widgetSpec.low + widgetSpec.high) / 2);
             const step = (widgetSpec.high - widgetSpec.low) / 1000;
             // Try to guess a reasonable fixed width.
             const fixedWidth = String(widgetSpec.high - step).length;
-            return <div style={{
-                border: "2px solid black",
-                borderRadius: "10px",
-                backgroundColor: "#555",
-                padding: "10px",
-                verticalAlign: "middle",
-            }}>
+            return <div style={widgetBoxStyle}>
                 <span style={liftedTextStyle}>{widgetSpec.name}:</span>
                 <input
                     type="range"
@@ -410,13 +412,7 @@ class ResultsWindow extends React.Component {
             </div>;
         } else if (widgetSpec.kind === "checkbox") {
             const value = this.getWidgetValue(widgetSpec.name, false);
-            return <div style={{
-                border: "2px solid black",
-                borderRadius: "10px",
-                backgroundColor: "#555",
-                padding: "10px",
-                verticalAlign: "middle",
-            }}>
+            return <div style={widgetBoxStyle}>
                 <span style={textStyle}>{widgetSpec.name}:</span>
                 <input
                     type="checkbox"
@@ -424,6 +420,31 @@ class ResultsWindow extends React.Component {
                     onChange={(event) => { this.updateWidgetValue(widgetSpec.name, event.target.value); }}
                     style={{transform: "scale(1.5)"}}
                 />
+            </div>;
+        } else if (widgetSpec.kind === "selector") {
+            const value = this.getWidgetValue(widgetSpec.name, 0);
+            return <div style={widgetBoxStyle}>
+                <span style={textStyle}>{widgetSpec.name}:</span>
+                {widgetSpec.selections.map((optionName, i) =>
+                    <span
+                        style={{
+                            ...textStyle,
+                            border: value === i ? "2px solid green" : "2px solid black",
+                            backgroundColor: value === i ? "#464" : "#444",
+                            borderRadius: "10px",
+                            padding: "5px",
+                            marginLeft: "4px",
+                            marginRight: "4px",
+                            userSelect: "none",
+                        }}
+                        key={i}
+                        onClick={() => {
+                            this.updateWidgetValue(widgetSpec.name, i);
+                        }}
+                    >
+                        {optionName}
+                    </span>
+                )}
             </div>;
         }
         return <div style={{backgroundColor: "#833"}}>Bad widget spec: <code>{JSON.stringify(widgetSpec)}</code></div>;
