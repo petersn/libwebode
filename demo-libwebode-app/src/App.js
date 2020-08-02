@@ -24,7 +24,7 @@ RawCodeMirror.defineSimpleMode("odelang", {
         // Match strings.
         {regex: /"(?:[^\\]|\\.)*?(?:"|$)/, token: "string"},
         // Match keywords.
-        {regex: /(?:javascript|fn|as|for|in|if|else|return|native|var|dyn|const|int|float|plot|tolerance|simtime)\b/, token: "keyword"},
+        {regex: /(?:javascript|global|fn|as|for|in|if|else|return|native|var|dyn|const|int|float|plot|tolerance|simtime)\b/, token: "keyword"},
         // Match initialization and driving.
         {regex: /~|<-/, token: "drive"},
         // Match built-ins.
@@ -58,7 +58,6 @@ RawCodeMirror.defineSimpleMode("odelang", {
 });
 
 const STARTING_CODE = `// Simple oscillator
-// Hit ctrl+enter to recompile
 
 /*
 freq <- Slider(1, 2);
@@ -66,10 +65,20 @@ x ~ Uniform(-1, 1);
 x'' <- -freq * x;
 */
 
+cycle ~ 1;
+cycle'' <- -cycle * Slider(0, 2);
+plot cycle;
+
+fn logistic($x) {
+  return exp($x) / (1 + exp($x));
+}
+
 fn ewma($x: dyn, $timeConstant: dyn) -> dyn {
-    result ~ 0;
-    result' <- ($x - result) / $timeConstant;
-    return result;
+  result ~ 0;
+  //smoothing <- 1 / ((1.01 + global.cycle) * $timeConstant);
+  smoothing <- (1 + global.cycle) / $timeConstant;
+  result' <- ($x - result) * smoothing;
+  return result;
 }
 
 x' <- WienerDerivative();
@@ -125,7 +134,13 @@ class CodeEditor extends React.Component {
     constructor() {
         super()
         this.cmRef = React.createRef();
-        this.state = {code: STARTING_CODE};
+        this.state = {
+            code: STARTING_CODE,
+            lastCompiledCode: "",
+            dialogMessage: null,
+            showDialog: false,
+        };
+        this.dialogCounter = 0;
     }
 
     moveCursor(line, ch) {
@@ -133,12 +148,34 @@ class CodeEditor extends React.Component {
             this.cmRef.current.editor.setCursor({line, ch});
     }
 
+    setDialog(message, timeout) {
+        const counterValue = ++this.dialogCounter;
+        if (message === null) {
+            this.setState({showDialog: false});
+        } else {
+            this.setState({dialogMessage: message, showDialog: true});
+        }
+        if (timeout !== undefined) {
+            setTimeout(
+                () => {
+                    // Check that this timeout is still current by checking the ticket number.
+                    if (this.dialogCounter === counterValue) {
+                        this.setState({showDialog: false});
+                    }
+                },
+                timeout,
+            );
+        }
+    }
+
     render() {
         return <div style ={{
+            //border: this.state.code === this.state.lastCompiledCode ? "2px solid black" : "2px solid #e22",
             border: "2px solid black",
-            width: "500px",
-            height: "800px",
+            width: "600px",
+            height: "96vh",
             borderRadius: "3px",
+            position: "relative",
         }}>
             <CodeMirror
                 value={this.state.code}
@@ -149,13 +186,19 @@ class CodeEditor extends React.Component {
                     indentUnit: 2,
                     extraKeys: {
                         "Ctrl-Enter": () => {
-                            this.props.onCompile(this.state.code);
+                            this.props.parent.onCompile(this.state.code);
+                        },
+                        "Ctrl-Space": () => {
+                            this.props.parent.rerunSimulation(true);
                         },
                         "Ctrl-S": () => {
-                            
+                            this.props.parent.onSaveCode(this.state.code);
                         },
                         "Tab": (cm) => {
                             cm.replaceSelection("  ", "end");
+                        },
+                        "Esc": () => {
+                            this.setDialog(null);
                         },
                     },
                 }}
@@ -165,42 +208,165 @@ class CodeEditor extends React.Component {
                 onChange={(editor, data, code) => {}}
                 ref={this.cmRef}
             />
+            {
+                this.state.code !== this.state.lastCompiledCode &&
+                <span style={{
+                    border: "2px solid black",
+                    borderRadius: "10px",
+                    backgroundColor: "#f00",
+                    opacity: 0.5,
+                    position: "absolute",
+                    bottom: "10px",
+                    right: "10px",
+                    padding: "5px",
+                    fontSize: "60%",
+                    fontFamily: "monospace",
+                    color: "white",
+                    zIndex: 10,
+                }}>
+                    ctrl+enter to recompile
+                </span>
+            }
+            {
+                <div style={{
+                    //width: "300px",
+                    display: "block",
+                    border: "2px solid black",
+                    borderRadius: "10px",
+                    backgroundColor: "#456",
+                    position: "absolute",
+                    bottom: "10px",
+                    left: "10px",
+                    padding: "20px",
+                    fontSize: "120%",
+                    fontFamily: "monospace",
+                    color: "white",
+                    zIndex: 20,
+                    opacity: this.state.showDialog ? 1 : 0,
+                    transition: "opacity 0.15s ease-in-out",
+                }}>
+                    <pre style={{margin: "0px"}}>{this.state.dialogMessage}</pre>
+                </div>
+            }
         </div>;
     }
 }
-
-/*
-[
-                        {
-                            x: [1, 2, 3],
-                            y: [2, 6, 3],
-                            type: 'scatter',
-                            mode: 'lines+markers',
-                            marker: {color: 'red'},
-                        },
-                        {type: 'bar', x: [1, 2, 3], y: [2, 5, 3]},
-                    ]
-
-{width: 320, height: 240, title: 'A Fancy Plot'}
-*/
 
 class ResultsWindow extends React.Component {
+    constructor() {
+        super();
+        this.state = {widgetStates: {}};
+    }
+
+    getWidgetValue(name, defaultValue) {
+        if (this.state.widgetStates.hasOwnProperty(name)) {
+            return this.state.widgetStates[name];
+        }
+        this.updateWidgetValueNoCheck(name, defaultValue);
+        return defaultValue;
+    }
+
+    updateWidgetValueNoCheck(name, newValue) {
+        this.setState({widgetStates: {...this.state.widgetStates, [name]: newValue}});
+    }
+
+    updateWidgetValue(name, newValue) {
+        const oldValue = this.getWidgetValue(name, newValue);
+        if (oldValue !== newValue) {
+            this.props.parent.setSimParameter(name, newValue);
+            this.props.parent.rerunSimulation();
+        }
+        this.updateWidgetValueNoCheck(name, newValue);
+    }
+
+    applyAllParameters() {
+        for (const widgetSpec of this.props.widgetSpecs) {
+            const name = widgetSpec.name;
+            if (!this.state.widgetStates.hasOwnProperty(name))
+                continue;
+            this.props.parent.setSimParameter(name, this.state.widgetStates[name]);
+        }
+    }
+
+    renderWidget(widgetSpec) {
+        if (widgetSpec.kind === "slider") {
+            const liftedTextStyle = {
+                color: "white",
+                marginLeft: "10px",
+                marginRight: "10px",
+                marginTop: "-5px",
+                marginBottom: "-5px",
+                // Lift the text up a little to line up with the range input.
+                // The display: inline-block is required to make transform work.
+                transform: "translateY(-25%)",
+                display: "inline-block",
+                fontFamily: "monospace",
+                fontSize: "130%",
+            };
+            const value = this.getWidgetValue(widgetSpec.name, (widgetSpec.low + widgetSpec.high) / 2);
+            const step = (widgetSpec.high - widgetSpec.low) / 1000;
+            return <div style={{
+                border: "2px solid black",
+                borderRadius: "10px",
+                backgroundColor: "#555",
+                padding: "10px",
+                verticalAlign: "middle",
+            }}>
+                <span style={liftedTextStyle}>{widgetSpec.name}:</span>
+                <input
+                    type="range"
+                    min={widgetSpec.low}
+                    max={widgetSpec.high}
+                    value={value}
+                    step={step}
+                    onChange={(event) => { this.updateWidgetValue(widgetSpec.name, event.target.value); }}
+                />
+                <span style={liftedTextStyle}>({value}) [{widgetSpec.low} - {widgetSpec.high}]</span>
+            </div>
+        }
+        return <div style={{backgroundColor: "#833"}}>Bad widget spec: <code>{JSON.stringify(widgetSpec)}</code></div>;
+    }
+
     render() {
-        return <div>
-            {this.props.plotSpecs.map((plotSpec, i) =>
-                <Plot data={plotSpec.data} layout={plotSpec.layout} key={i}/>
-            )}
+        const boxStyle = {
+            flexGrow: 1,
+            border: "2px solid black",
+            borderRadius: "10px",
+            backgroundColor: "#444",
+            padding: "10px",
+            display: "flex",
+            flexWrap: "wrap",
+        };
+        return <div style={{display: "flex", flexDirection: "column"}}>
+            <div style={boxStyle}>
+                {this.props.plotSpecs.map((plotSpec, i) =>
+                    <div key={i} style={{margin: "2px"}}>
+                        <Plot data={plotSpec.data} layout={plotSpec.layout}/>
+                    </div>
+                )}
+            </div>
+            <div style={{...boxStyle, marginTop: "10px"}}>
+                {this.props.widgetSpecs.map((widgetSpec, i) =>
+                    <div key={i}>
+                        {this.renderWidget(widgetSpec)}
+                    </div>
+                )}
+            </div>
         </div>;
     }
 }
 
-const libwebode = require("./libwebode.js");
+//const libwebode = require("./libwebode.js");
 
 class App extends React.Component {
     constructor() {
         super();
         this.editorRef = React.createRef();
-        this.state = {val: -1, plotSpecs: []};
+        this.parametersRef = React.createRef();
+        this.state = {val: -1, plotSpecs: [], widgetSpecs: []};
+        this.simData = null;
+        this.simCtx = null;
+        this.simRNGStartingState = null;
     }
 
     componentDidMount() {
@@ -208,43 +374,93 @@ class App extends React.Component {
     }
 
     async updateVal() {
-        await libwebode.initializationPromise;
-        this.setState({val: libwebode.getValue()});
-        this.forceUpdate();
+        //await libwebode.initializationPromise;
+        //this.setState({val: libwebode.getValue()});
+        //this.forceUpdate();
     }
 
-    async rerunSimulation(simData) {
-        const ctx = simData.allocate();
-        simData.initialize(ctx);
+    async setupSimulation(simData) {
+        this.simData = simData;
+        this.simCtx = this.simData.allocate();
+        if (this.parametersRef.current)
+            this.parametersRef.current.applyAllParameters();
+        await this.rerunSimulation(true);
+    }
+
+    async rerunSimulation(reseed) {
+        if (this.simData === null)
+            return;
+        if (reseed) {
+            this.simData.reseedRNG();
+            this.simRNGStartingState = this.simData.getRNGState();
+        } else if (this.simRNGStartingState !== null) {
+            this.simData.setRNGState(this.simRNGStartingState);
+        }
+        this.simData.initialize(this.simCtx);
         let t = 0.0;
-        const stepSize = Math.max(1e-3, simData.settings.tolerance);
-        const {state, statePrime} = ctx;
-        simData.extractPlotDatum(ctx, t, stepSize);
-        while (t < simData.settings.simtime) {
+        const stepSize = Math.max(1e-3, this.simData.settings.tolerance);
+        const {state, statePrime} = this.simCtx;
+        // This first getDerivative is to fill in zeroth order variables for plotting.
+        this.simData.getDerivative(this.simCtx, t, stepSize);
+        this.simData.extractPlotDatum(this.simCtx, t, stepSize);
+        while (t < this.simData.settings.simtime) {
             // Do a first-order Euler step.
-            simData.getDerivative(ctx, t, stepSize);
+            this.simData.getDerivative(this.simCtx, t, stepSize);
             for (let i = 0; i < state.length; i++)
                 state[i] += stepSize * statePrime[i];
             t += stepSize;
-            simData.extractPlotDatum(ctx, t, stepSize);
+            this.simData.extractPlotDatum(this.simCtx, t, stepSize);
         }
-        console.log(ctx.plotData);
+        console.log(this.simCtx.plotData);
         const plotSpecs = [];
-        for (const plotName of Object.keys(simData.plots)) {
-            const plot = simData.plots[plotName];
-            console.log("Plot:", plot);
+        for (const plotName of Object.keys(this.simData.plots)) {
+            const plot = this.simData.plots[plotName];
             plotSpecs.push({
                 data: [
                     {
-                        ...ctx.plotData[plotName],
+                        ...this.simCtx.plotData[plotName],
                         type: 'scatter',
                         mode: 'lines',
                     },
                 ],
-                layout: {width: 500, height: 300, title: plotName},
+                layout: {
+                    width: 500,
+                    height: 300,
+                    title: plotName,
+                    margin: {
+                        l: 30,
+                        r: 30,
+                        b: 30,
+                        t: 30,
+                        pad: 4,
+                    },
+                    plot_bgcolor: "#eee",
+                    paper_bgcolor: "#eee",
+                },
             });
         }
-        this.setState({plotSpecs});
+        this.setState({plotSpecs, widgetSpecs: this.simData.widgets});
+    }
+
+    setDialog(message, timeout) {
+        if (this.editorRef.current)
+            this.editorRef.current.setDialog(message, timeout);
+        else
+            alert(message);
+    }
+
+    setSimParameter(name, value) {
+        if (this.simData === null)
+            return;
+        if (!this.simData.parameterTable.hasOwnProperty(name)) {
+            this.setDialog("BUG BUG BUG: Attempt to set invalid parameter: " + name);
+            return;
+        }
+        this.simCtx.parameters[this.simData.parameterTable[name]] = value;
+    }
+
+    onSaveCode = async (code) => {
+        this.setDialog("Saved!", 750);
     }
 
     onCompile = async (code) => {
@@ -255,29 +471,48 @@ class App extends React.Component {
         });
         const result = await response.json();
         if (result.error) {
-            if (this.editorRef.current && result.line_number !== -1)
-                this.editorRef.current.moveCursor(result.line_number - 1, result.column_number - 1);
+            if (this.editorRef.current) {
+                let errorMessage = result.message;
+                if (result.line_number !== -1) {
+                    errorMessage += "\nLine: " + result.line_number + " Column: " + result.column_number;
+                    this.editorRef.current.moveCursor(result.line_number - 1, result.column_number - 1);
+                }
+                errorMessage += "\n(press esc to clear)";
+                this.setDialog(errorMessage);
+            }
         } else {
-            this.rerunSimulation(eval(result.js));
+            // Update the most recently successfully compiled code.
+            if (this.editorRef.current)
+                this.editorRef.current.setState({lastCompiledCode: code});
+            this.setupSimulation(eval(result.js));
         }
     }
 
     render() {
         return <div style={{
-            display: "flex",
-            justifyContent: "space-between",
+            //display: "flex",
+            /*justifyContent: "space-between",*/
         }}>
             {/*<div>Hello, world! {this.state.val}</div>*/}
             <div style={{
+                float: "left",
+                paddingRight: "20px",
             }}>
                 <CodeEditor
-                    onCompile={this.onCompile}
+                    parent={this}
                     ref={this.editorRef}
                 />
             </div>
             <div style={{
+                width: "100%",
+                heigh: "100%",
             }}>
-                <ResultsWindow plotSpecs={this.state.plotSpecs}/>
+                <ResultsWindow
+                    parent={this}
+                    widgetSpecs={this.state.widgetSpecs}
+                    plotSpecs={this.state.plotSpecs}
+                    ref={this.parametersRef}
+                />
             </div>
         </div>;
     }

@@ -25,12 +25,16 @@ def dict_insert_no_collision(d, desired_name, f):
 class InterpreterError(dsl_parser.SourcePositionError):
     NAME = "Interpreter"
 
+LAYER_DYN = 1
+LAYER_CONST = 2
+LAYER_COMPTIME = 3
+
 class Datum:
     IS_VAR = False
+    LAYER = LAYER_DYN
 
 class StateVariable(Datum):
     IS_VAR = True
-    IS_CONST = False
 
     def __init__(self, name):
         self.name = name
@@ -42,10 +46,11 @@ class StateVariable(Datum):
         return {self}
 
 class AdjustableParameter(Datum):
-    IS_CONST = True
+    LAYER = LAYER_CONST
 
-    def __init__(self, name):
+    def __init__(self, name, default_value):
         self.name = name
+        self.default_value = default_value
 
     def __repr__(self):
         return "param<%s>" % self.name
@@ -54,8 +59,9 @@ class AdjustableParameter(Datum):
         return {self}
 
 class Expr(Datum):
-    def __init__(self, is_const, op, args):
-        self.IS_CONST = is_const
+    def __init__(self, layer, op, args):
+        assert layer in (1, 2, 3)
+        self.LAYER = layer
         self.op = op
         self.args = args
 
@@ -69,7 +75,7 @@ class Expr(Datum):
         return r
 
 class CompileTimeData(Datum):
-    IS_CONST = True
+    LAYER = LAYER_COMPTIME
 
     def __init__(self, ty, value):
         assert isinstance(value, ty)
@@ -93,7 +99,11 @@ def func_print(ctx, scope):
     print("Print called:", scope["val"])
 
 def func_Slider(ctx, scope):
-    adj_var = ctx.make_adjustable_parameter(scope["@purpose_name"], name_must_be_exact=False)
+    adj_var = ctx.make_adjustable_parameter(
+        desired_name=scope["@purpose_name"],
+        default_value=(scope["high"].value + scope["low"].value) / 2,
+        name_must_be_exact=False,
+    )
     ctx.widgets.append({
         "kind": "slider",
         "name": adj_var.name,
@@ -103,13 +113,13 @@ def func_Slider(ctx, scope):
     return adj_var
 
 def func_Uniform(ctx, scope):
-    return Expr(True, "Uniform", [scope["low"], scope["high"]])
+    return Expr(LAYER_CONST, "Uniform", [scope["low"], scope["high"]])
 
 def func_Gaussian(ctx, scope):
-    return Expr(True, "Gaussian", [])
+    return Expr(LAYER_CONST, "Gaussian", [])
 
 def func_WienerDerivative(ctx, scope):
-    return Expr(True, "WienerDerivative", [])
+    return Expr(LAYER_DYN, "WienerDerivative", [])
 
 def prefix_join(a, b):
     if a == "":
@@ -129,8 +139,8 @@ class Context:
             "Uniform": Function("Uniform", [("low", "const"), ("high", "const")], "const", func_Uniform),
             "Gaussian": Function("Gaussian", [], "const", func_Gaussian),
             "WienerDerivative": Function("WienerDerivative", [], "dyn", func_WienerDerivative),
-            "globalTime": Expr(False, "globalTime", []),
-            "globalStepSize": Expr(False, "globalStepSize", []),
+            "globalTime": Expr(LAYER_DYN, "globalTime", []),
+            "globalStepSize": Expr(LAYER_DYN, "globalStepSize", []),
             "e": CompileTimeData(float, math.e),
             "pi": CompileTimeData(float, math.pi),
             "@name_prefix": "",
@@ -143,7 +153,7 @@ class Context:
                     name=name,
                     args=[("x", "dyn")],
                     return_type="dyn",
-                    body=lambda ctx, scope: Expr(False, name, [scope["x"]]),
+                    body=lambda ctx, scope: Expr(LAYER_DYN, name, [scope["x"]]),
                 )
             closure_scope(name)
         self.plots = {}
@@ -179,13 +189,35 @@ class Context:
         if ty == "dyn":
             return
         elif ty == "const":
-            if not value.IS_CONST:
+            if not value.LAYER < LAYER_CONST:
                 raise self.interpreter_error("Bad type, value should be const: %r : %r" % (value, ty))
         elif ty in concrete_mapping:
             if (not isinstance(value, CompileTimeData)) or value.ty not in concrete_mapping[ty]:
                 raise self.interpreter_error("Bad type, value should be %s: %r" % (ty, value))
         else:
             raise self.interpreter_error("Bug: Unimplemented type in check: %r : %r" % (value, ty))
+
+    def perform_compile_time_operator(self, op_name, args):
+        if op_name == "+":
+            result = sum(args)
+        elif op_name == "-":
+            if len(args) == 1:
+                result = -args[0]
+            else:
+                result = args[0] - args[1]
+        elif op_name == "*":
+            result = args[0] * args[1]
+        elif op_name == "/":
+            result = args[0] / args[1]
+        elif op_name == "%":
+            result = args[0] % args[1]
+        elif op_name == "^":
+            result = args[0] ** args[1]
+        else:
+            raise self.interpreter_error("Bug: Unimplemented compile-time operation: %r(%s)" % (
+                op_name, ", ".join(str(arg) for arg in args)
+            ))
+        return CompileTimeData(type(result), result)
 
     def evaluate_expr(self, scope, expr, purpose_name):
         kind = expr[0]
@@ -199,6 +231,12 @@ class Context:
                 return value
             self.register_variable(var_name)
             return self.all_variables[var_name]
+        elif kind == "dot":
+            # Right now we only support indexing global.
+            _, lhs, name = expr
+            if lhs != ("var", "global"):
+                raise self.interpreter_error("For now global is the only thing that may appear on the left of a dot accessor")
+            return self.evaluate_expr({"@name_prefix": ""}, ("var", name), "BUGBUGBUG")
         elif kind == "compvar":
             return self.lookup(scope, expr[1])
         elif kind == "lit":
@@ -207,8 +245,11 @@ class Context:
         elif kind in {"unary-op", "binary-op"}:
             op_name = expr[1]
             op_args = [self.evaluate_expr(scope, arg_expr, purpose_name) for arg_expr in expr[2:]]
+            # Do constant folding here.
+            if all(arg.LAYER == LAYER_COMPTIME for arg in op_args):
+                return self.perform_compile_time_operator(op_name, [arg.value for arg in op_args])
             return Expr(
-                is_const=all(arg.IS_CONST for arg in op_args),
+                layer=min(arg.LAYER for arg in op_args),
                 op=op_name,
                 args=op_args,
             )
@@ -244,9 +285,9 @@ class Context:
         if name.endswith("'"):
             self.register_variable(name[:-1])
 
-    def make_adjustable_parameter(self, desired_name, name_must_be_exact=True):
+    def make_adjustable_parameter(self, desired_name, default_value, name_must_be_exact=True):
         if desired_name not in self.adjustable_parameters:
-            adj_param = AdjustableParameter(desired_name)
+            adj_param = AdjustableParameter(desired_name, default_value)
             self.adjustable_parameters[desired_name] = adj_param
             return adj_param
         elif name_must_be_exact:
@@ -266,7 +307,7 @@ class Context:
     def set_initializer(self, lhs, rhs):
         if not lhs.IS_VAR:
             raise self.interpreter_error("LHS of ~ must be a var.")
-        if not rhs.IS_CONST:
+        if not rhs.LAYER >= LAYER_CONST:
             raise self.interpreter_error("RHS of ~ must be constant.")
         # We add a prime here because if a variable is initialized then it's dynamic, and thus has a derivative.
         self.register_variable(lhs.name + "'")
@@ -476,6 +517,13 @@ class Context:
     def codegen_js(self):
         self.codegen_shared()
 
+        allocate_code = []
+        for param_name, param in self.adjustable_parameters.items():
+            allocate_code.append("parameters[%s /*%s*/] = %r;" % (
+                self.parameter_allocation[param_name], param_name, param.default_value,
+            ))
+        allocate_code = "\n".join(allocate_code)
+
         init_code = []
         for base_name in sorted(self.codegen_variable_info.keys()):
             info = self.codegen_variable_info[base_name]
@@ -521,6 +569,7 @@ class Context:
             "degrees_of_freedom": self.degrees_of_freedom,
             "scratch_buffer_size": self.scratch_buffer_size,
             "parameter_count": len(self.adjustable_parameters),
+            "allocate_code": indent_all_lines(12, allocate_code).strip(),
             "initialization_code": indent_all_lines(12, init_code).strip(),
             "derivative_code": indent_all_lines(12, derivative_code).strip(),
             "extract_plot_datum": indent_all_lines(12, extract_plot_datum).strip(),
@@ -534,14 +583,31 @@ class Context:
         }
         return """
 (() => {
+    let xoshiro128ss_state = [[1, 2, 3, 4]];
+    const reseedRNG = () => {
+        const newState = [];
+        for (let i = 0; i < 4; i++)
+            newState.push(Math.floor(Math.random() * 4294967296) | 0);
+        xoshiro128ss_state[0] = newState;
+    }
+    reseedRNG();
+    function myRandom() {
+        let [a, b, c, d] = xoshiro128ss_state[0];
+        var t = b << 9, r = a * 5; r = (r << 7 | r >>> 25) * 9;
+        c ^= a; d ^= b;
+        b ^= c; a ^= d; c ^= t;
+        d = d << 11 | d >>> 21;
+        xoshiro128ss_state[0] = [a, b, c, d];
+        return (r >>> 0) / 4294967296;
+    }
     function uniformRandom(low, high) {
-        return low + (high - low) * Math.random();
+        return low + (high - low) * myRandom();
     }
     const boxMullerCache = [null];
     function gaussianRandom() {
         if (boxMullerCache[0] === null) {
             // Use Box-Muller transform, and stash the other sample for later.
-            const u = 1e-50 + Math.random(), v = Math.random();
+            const u = 1e-50 + myRandom(), v = myRandom();
             const scale = Math.sqrt(-2 * Math.log(u));
             const arg = 2 * Math.PI * v;
             boxMullerCache[0] = scale * Math.cos(arg);
@@ -560,10 +626,12 @@ class Context:
             const statePrime = new Float64Array(%(degrees_of_freedom)s);
             const scratch = new Float64Array(%(scratch_buffer_size)s);
             const parameters = new Float64Array(%(parameter_count)s);
-            const plotData = %(plot_data_initial)s;
+            const plotData = {};
+            %(allocate_code)s
             return {state, statePrime, scratch, parameters, plotData};
         },
         initialize: (ctx) => {
+            ctx.plotData = %(plot_data_initial)s;
             const {state, scratch, parameters} = ctx;
             %(initialization_code)s
         },
@@ -574,6 +642,11 @@ class Context:
         extractPlotDatum: (ctx, t, dt) => {
             const {state, statePrime, scratch, parameters, plotData} = ctx;
             %(extract_plot_datum)s
+        },
+        reseedRNG,
+        getRNGState: () => [...xoshiro128ss_state[0]],
+        setRNGState: (state) => {
+            xoshiro128ss_state[0] = [...state];
         },
         plots: %(plots)s,
         widgets: %(widgets)s,
