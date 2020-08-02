@@ -127,7 +127,7 @@ def func_Slider(ctx, scope):
         ctx.type_check_assert(args[2], "float")
         desired_name, low, high = [arg.value for arg in args]
     adj_var = ctx.make_adjustable_parameter(
-        desired_name=desired_name,
+        desired_name=prefix_join(scope["@name_prefix"], desired_name),
         default_value=(low + high) / 2,
         name_must_be_exact=False,
     )
@@ -148,7 +148,7 @@ def func_Checkbox(ctx, scope):
         ctx.type_check_assert(args[0], "str")
         desired_name = args[0].value
     adj_var = ctx.make_adjustable_parameter(
-        desired_name=desired_name,
+        desired_name=prefix_join(scope["@name_prefix"], desired_name),
         default_value=False,
         name_must_be_exact=False,
     )
@@ -172,7 +172,7 @@ def func_Selector(ctx, scope):
     for arg in args:
         ctx.type_check_assert(arg, "Function")
     adj_var = ctx.make_adjustable_parameter(
-        desired_name=desired_name,
+        desired_name=prefix_join(scope["@name_prefix"], desired_name),
         default_value=0,
         name_must_be_exact=False,
     )
