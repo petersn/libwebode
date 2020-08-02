@@ -103,11 +103,12 @@ class CompileTimeData(Datum):
         return set()
 
 class Function:
-    def __init__(self, name, args, return_type, body):
+    def __init__(self, name, args, return_type, body, do_prefix_names=True):
         self.name = name
         self.args = args
         self.return_type = return_type
         self.body = body
+        self.do_prefix_names = do_prefix_names
 
 def func_print(ctx, scope):
     m = " ".join(str(i) for i in scope["@args"])
@@ -247,9 +248,9 @@ class Context:
         self.print_output = []
         self.root_scope = {
             "print": Function("print", 0, ("tuple", []), func_print),
-            "Slider": Function("Slider", 2, "const", func_Slider),
-            "Checkbox": Function("Checkbox", 0, "int", func_Checkbox),
-            "Selector": Function("Selector", 1, None, func_Selector),
+            "Slider": Function("Slider", 2, "const", func_Slider, do_prefix_names=False),
+            "Checkbox": Function("Checkbox", 0, "int", func_Checkbox, do_prefix_names=False),
+            "Selector": Function("Selector", 1, None, func_Selector, do_prefix_names=False),
             "Uniform": Function("Uniform", [("low", "const"), ("high", "const")], "const", func_Uniform),
             "Gaussian": Function("Gaussian", [], "const", func_Gaussian),
             "addDeriv": Function("addDeriv", [("var", "var")], "var", func_addDeriv),
@@ -415,7 +416,7 @@ class Context:
                 if not isinstance(value, Datum):
                     assert isinstance(value, Function)
                     value = CompileTimeData(type(value), value)
-                #    self.interpreter_error("Function %s can't be used like a variable" % var_name)
+                    #self.interpreter_error("Function %s can't be used like a variable" % var_name)
                 return value
             self.register_variable(var_name)
             return self.all_variables[var_name]
@@ -480,7 +481,9 @@ class Context:
                 ))
             subscope = scope.copy()
             subscope["@purpose_name"] = purpose_name
-            subscope["@name_prefix"] = prefix_join(scope["@name_prefix"], self.get_unique(fn_name))
+            # Only update the name prefix if we're not immediately calling a builtin function.
+            if fn.do_prefix_names:
+                subscope["@name_prefix"] = prefix_join(scope["@name_prefix"], self.get_unique(fn_name))
             if isinstance(fn.args, int):
                 subscope["@args"] = args
             else:
@@ -558,6 +561,19 @@ class Context:
         if lhs.name in self.variable_drivers:
             self.interpreter_error("Attempt to double-drive %s" % lhs.name)
         self.variable_drivers[lhs.name] = rhs
+
+    def add_to_driver(self, lhs, rhs):
+        if not lhs.IS_VAR:
+            self.interpreter_error("LHS of <- must be a var, not: %r" % (lhs,))
+        self.register_variable(lhs.name)
+        if lhs.name in self.variable_drivers:
+            self.variable_drivers[lhs.name] = Expr(
+                layer=LAYER_DYN,
+                op="+",
+                args=[self.variable_drivers[lhs.name], rhs],
+            )
+        else:
+            self.variable_drivers[lhs.name] = rhs
 
     def get_purpose_name_from(self, lhs):
         if lhs.IS_VAR:
@@ -672,19 +688,23 @@ class Context:
             elif kind == "expr":
                 _, e = statement
                 expr_kind = e[0]
-                if expr_kind == "binary-op" and e[1] in {"~", "<-"}:
+                if expr_kind == "binary-op" and e[1] in {"~", "<-", "<-+-"}:
                     _, op_kind, lhs, rhs = e
                     lhs = self.evaluate_expr(scope, lhs, "param")
-                    purpose_name = self.get_purpose_name_from(lhs) + {"~": "_init", "<-": "_param"}[op_kind]
+                    purpose_name = self.get_purpose_name_from(lhs) + {
+                        "~": "_init", "<-": "_param", "<-+-": "_param"
+                    }[op_kind]
                     rhs = self.evaluate_expr(scope, rhs, purpose_name=purpose_name)
                     if op_kind == "~":
                         self.set_initializer(lhs, rhs)
                     elif op_kind == "<-":
                         self.set_driver(lhs, rhs)
+                    elif op_kind == "<-+-":
+                        self.add_to_driver(lhs, rhs)
                 elif expr_kind == "call":
                     result = self.evaluate_expr(scope, e, "param")
                 else:
-                    self.interpreter_error("Invalid expression. Only (x ~ y), (x <- y), (x := y), and function calls allowed at top-level.")
+                    self.interpreter_error("Invalid expression. Only (x ~ y), (x <- y), (x <-+- y), (x := y), and function calls allowed at top-level.")
             elif kind == "let":
                 _, let_desc = statement
                 value = self.evaluate_expr(scope, let_desc["initializer"], let_desc["name"])

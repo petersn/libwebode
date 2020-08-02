@@ -18,6 +18,7 @@ length_two_symbols = {
     "::", ":=", "..",
     "<-", "->", "||", "&&",
 }
+length_four_symbols = {"<-+-"}
 keywords = {
     "fn", "as", "for", "in", "if", "else", "return", "native", "javascript",
     "var", "dyn", "const", "int", "float", "array",
@@ -184,6 +185,9 @@ class Lexer:
                     tokens.append(Token("javascript", span, self.stream_pos))
                 else:
                     tokens.append(Token(kind, span, self.stream_pos))
+            elif self.text[self.cursor : self.cursor+4] in length_four_symbols:
+                tokens.append(Token("symbol", self.text[self.cursor : self.cursor+4], self.stream_pos))
+                self.advance(4)
             elif self.text[self.cursor : self.cursor+2] in length_two_symbols:
                 tokens.append(Token("symbol", self.text[self.cursor : self.cursor+2], self.stream_pos))
                 self.advance(2)
@@ -233,29 +237,30 @@ class Lexer:
 
 # Fields mean: is_left_associative, precedence
 binary_operators = {
-    "^":   (False, 9),
-    "*":   (True,  7),
-    "/":   (True,  7),
-    "%":   (True,  7),
-    "+":   (True,  6),
-    "-":   (True,  6),
-    "..":  (False, 5),
-    "<=":  (True,  4),
-    ">=":  (True,  4),
-    "<":   (True,  4),
-    ">":   (True,  4),
-    "==":  (True,  3),
-    "!=":  (True,  3),
-    "&&":  (True,  1),
-    "||":  (True,  1),
-    "=":   (False, 0),
-    "+=":  (False, 0),
-    "-=":  (False, 0),
-    "*=":  (False, 0),
-    "/=":  (False, 0),
-    "%=":  (False, 0),
-    "<-":  (False, 0),
-    "~":   (False, 0),
+    "^":    (False, 9),
+    "*":    (True,  7),
+    "/":    (True,  7),
+    "%":    (True,  7),
+    "+":    (True,  6),
+    "-":    (True,  6),
+    "..":   (False, 5),
+    "<=":   (True,  4),
+    ">=":   (True,  4),
+    "<":    (True,  4),
+    ">":    (True,  4),
+    "==":   (True,  3),
+    "!=":   (True,  3),
+    "&&":   (True,  1),
+    "||":   (True,  1),
+    "=":    (False, 0),
+    "+=":   (False, 0),
+    "-=":   (False, 0),
+    "*=":   (False, 0),
+    "/=":   (False, 0),
+    "%=":   (False, 0),
+    "<-":   (False, 0),
+    "<-+-": (False, 0),
+    "~":    (False, 0),
 }
 
 unary_operators = {
@@ -532,6 +537,7 @@ class Parser:
 
 def parse(program_text):
     tokens = Lexer(program_text).lex()
+    #print(" ".join(str(t) for t in tokens))
     return Parser(tokens).parse_program()
 
 if __name__ == "__main__":
