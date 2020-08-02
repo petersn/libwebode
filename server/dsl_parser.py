@@ -231,19 +231,19 @@ class Lexer:
 
 # Fields mean: is_left_associative, precedence
 binary_operators = {
-    "^":   (False, 8),
-    "*":   (True,  6),
-    "/":   (True,  6),
-    "%":   (True,  6),
-    "+":   (True,  5),
-    "-":   (True,  5),
-    "..":  (False, 4),
-    "<=":  (True,  3),
-    ">=":  (True,  3),
-    "<":   (True,  3),
-    ">":   (True,  3),
-    "==":  (True,  2),
-    "!=":  (True,  2),
+    "^":   (False, 9),
+    "*":   (True,  7),
+    "/":   (True,  7),
+    "%":   (True,  7),
+    "+":   (True,  6),
+    "-":   (True,  6),
+    "..":  (False, 5),
+    "<=":  (True,  4),
+    ">=":  (True,  4),
+    "<":   (True,  4),
+    ">":   (True,  4),
+    "==":  (True,  3),
+    "!=":  (True,  3),
     "&&":  (True,  1),
     "||":  (True,  1),
     "=":   (False, 0),
@@ -257,8 +257,9 @@ binary_operators = {
 }
 
 unary_operators = {
-    "-": 7,
-    "+": 7,
+    "-": 8,
+    "+": 8,
+    "!": 2,
 }
 
 class Parser:

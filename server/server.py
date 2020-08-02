@@ -56,9 +56,29 @@ class CompileHandler(AllowCORS, tornado.web.RequestHandler):
             "print_output": "\n".join(ctx.print_output),
         }))
 
+class SaveHandler(AllowCORS, tornado.web.RequestHandler):
+    def post(self):
+        payload = json.loads(self.request.body)
+        code = payload["code"]
+        with open("system.webode", "w") as f:
+            f.write(code)
+        self.write(json.dumps({"error": False}))
+
+class ReloadHandler(AllowCORS, tornado.web.RequestHandler):
+    def post(self):
+        try:
+            with open("system.webode", "r") as f:
+                code = f.read()
+        except FileNotFoundError:
+            self.write(json.dumps({"error": True}))
+        else:
+            self.write(json.dumps({"error": False, "code": code}))
+
 def make_app():
     return tornado.web.Application([
         ("/compile", CompileHandler),
+        ("/save", SaveHandler),
+        ("/reload", ReloadHandler),
     ])
 
 if __name__ == "__main__":

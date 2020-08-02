@@ -29,7 +29,7 @@ RawCodeMirror.defineSimpleMode("odelang", {
         {regex: /~|<-/, token: "drive"},
         // Match built-ins.
         {regex: /(?:Uniform|Slider|Gaussian|WienerProcess|WienerDerivative|D|Integrate|exp|log|sin|cos|sqrt|abs|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
-        {regex: /(?:globalTime|globalStepSize|e|pi|tolerance|stepsize|integrator|simtime)\b/, token: "atom"},
+        {regex: /(?:globalTime|globalStepSize|e|pi|tolerance|stepsize|plotperiod|integrator|simtime)\b/, token: "atom"},
         // Match embedded javascript.
         //{regex: /javascript\s{/, token: "meta", mode: {spec: "javascript", end: /}/}},
         // Match numbers.
@@ -57,7 +57,65 @@ RawCodeMirror.defineSimpleMode("odelang", {
     },
 });
 
-const STARTING_CODE = `// Simple oscillator
+let BAD_STARTING_CODE = null;
+let STARTING_CODE = `// System
+
+
+`
+
+BAD_STARTING_CODE = `// System
+
+cycle ~ 1;
+cycle'' <- -cycle * Slider(0, 3);
+plot cycle;
+
+fn index($x: [dyn], $i: int) -> dyn {
+  if $i < 0 || $i >= len($x) {
+    return 0.0;
+  }
+  return $x[$i];
+}
+
+fn second_order_upwind($x: [dyn], $i: int) -> dyn {
+  return
+    + 3*index($x, $i - 1)
+    - 4*index($x, $i + 0)
+    +   index($x, $i + 1);
+}
+
+$N := 100;
+
+array transport[$N];
+
+// Initial conditions.
+transport[0] ~ 1;
+for $i in 1 .. $N {
+  transport[$i] ~ 0;
+}
+
+speed <- Slider(0, 3);
+
+for $i in 0 .. $N {
+  transport'[$i] <- speed * second_order_upwind(transport, $i);
+}
+
+array logTransport[$N];
+for $i in 0 .. $N {
+  logTransport[$i] <- log(1e-3 + transport[$i]);
+}
+
+plot {
+  title "Transport";
+  trace2d logTransport 1 {}
+}
+
+simoptions {
+  simtime: 10,
+}
+
+`
+
+const OLD_STARTING_CODE = `// Simple oscillator
 
 /*
 freq <- Slider(1, 2);
@@ -104,8 +162,8 @@ plot {
 //plot y;
 
 simoptions {
-  integrator: "euler",
-  stepsize: 1e-2,
+  integrator: "rk4",
+  stepsize: 0.1,
   simtime: 10,
 }
 `;
@@ -214,6 +272,9 @@ class CodeEditor extends React.Component {
                         },
                         "Ctrl-S": () => {
                             this.props.parent.onSaveCode(this.state.code);
+                        },
+                        "Ctrl-R": () => {
+                            this.props.parent.onReload();
                         },
                         "Tab": (cm) => {
                             cm.replaceSelection("  ", "end");
@@ -395,6 +456,7 @@ class App extends React.Component {
 
     componentDidMount() {
         //this.updateVal();
+        this.onReload();
     }
 
     async updateVal() {
@@ -414,8 +476,8 @@ class App extends React.Component {
     async rerunSimulation(reseed) {
         if (this.simData === null)
             return;
-        if (this.simData.settings.integrator !== "euler") {
-            this.setDialog("Unsupported integrator " + this.simData.settings.integrator + ", must select one of: euler");
+        if (!["euler", "rk4"].includes(this.simData.settings.integrator)) {
+            this.setDialog("Unsupported integrator " + this.simData.settings.integrator + ", must select one of: euler, rk4");
             return;
         }
         if (reseed) {
@@ -431,15 +493,60 @@ class App extends React.Component {
         // This first getDerivative is to fill in zeroth order variables for plotting.
         this.simData.getDerivative(this.simCtx, t, stepSize);
         this.simData.extractPlotDatum(this.simCtx, t, stepSize);
+        let lastPlotGrab = t;
+
+        // RK4 data structures.
+        const startingPointBuffer = new Float64Array(state.length);
+        const derivativeBuffers = [];
+        for (let i = 0; i < 3; i++)
+            derivativeBuffers.push(new Float64Array(statePrime.length));
+
         while (t < this.simData.settings.simtime) {
-            // Do a first-order Euler step.
-            this.simData.getDerivative(this.simCtx, t, stepSize);
-            for (let i = 0; i < state.length; i++)
-                state[i] += stepSize * statePrime[i];
+            if (this.simData.settings.integrator === "euler") {
+                // Do a first-order Euler step.
+                this.simData.getDerivative(this.simCtx, t, stepSize);
+                for (let i = 0; i < state.length; i++)
+                    state[i] += stepSize * statePrime[i];
+            } else if (this.simData.settings.integrator === "rk4") {
+                // Copy the starting state.
+                startingPointBuffer.set(state);
+
+                // First derivative evaluation.
+                this.simData.getDerivative(this.simCtx, t, stepSize);
+                derivativeBuffers[0].set(statePrime);
+
+                // Second derivative evaluation.
+                for (let i = 0; i < state.length; i++)
+                    state[i] += (stepSize / 2) * statePrime[i];
+                this.simData.getDerivative(this.simCtx, t + stepSize / 2, stepSize);
+                derivativeBuffers[1].set(statePrime);
+
+                // Third derivative evaluation.
+                state.set(startingPointBuffer);
+                for (let i = 0; i < state.length; i++)
+                    state[i] += (stepSize / 2) * statePrime[i];
+                this.simData.getDerivative(this.simCtx, t + stepSize / 2, stepSize);
+                derivativeBuffers[2].set(statePrime);
+
+                // Fourth derivative evaluation.
+                state.set(startingPointBuffer);
+                for (let i = 0; i < state.length; i++)
+                    state[i] += stepSize * statePrime[i];
+                this.simData.getDerivative(this.simCtx, t, stepSize);
+
+                // Final mixture.
+                state.set(startingPointBuffer);
+                for (let i = 0; i < state.length; i++)
+                    state[i] += (stepSize / 6) * (derivativeBuffers[0][i] + 2 * derivativeBuffers[1][i] + 2 * derivativeBuffers[2][i] + statePrime[i]);
+            }
+
             t += stepSize;
-            this.simData.extractPlotDatum(this.simCtx, t, stepSize);
+            if (t >= lastPlotGrab + this.simData.settings.plotperiod) {
+                this.simData.extractPlotDatum(this.simCtx, t, stepSize);
+                lastPlotGrab = t;
+            }
         }
-        console.log(this.simCtx.plotData);
+
         const plotStructs = [];
         for (const plotName of Object.keys(this.simData.plots)) {
             const plotSpec = this.simData.plots[plotName];
@@ -473,7 +580,26 @@ class App extends React.Component {
     }
 
     onSaveCode = async (code) => {
-        this.setDialog("Saved!", 750);
+        const response = await fetch(SERVER_HOST + "/save", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({code}),
+        });
+        const result = await response.json();
+        if (!result.error)
+            this.setDialog("Saved!", 750);
+    }
+
+    onReload = async () => {
+        const response = await fetch(SERVER_HOST + "/reload", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({}),
+        });
+        const result = await response.json();
+        if (!result.error && this.editorRef.current) {
+            this.editorRef.current.setState({code: result.code});
+        }
     }
 
     onCompile = async (code) => {

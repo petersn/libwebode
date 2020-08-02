@@ -223,6 +223,7 @@ class Context:
             "integrator": "euler",
             "tolerance": 1e-2,
             "stepsize": 1e-2,
+            "plotperiod": 0.02,
             "simtime": 10.0,
         }
         self.most_recent_line_number = 1
@@ -288,7 +289,10 @@ class Context:
 
     def perform_compile_time_operator(self, op_name, args):
         if op_name == "+":
-            result = args[0] + args[1]
+            if len(args) == 1:
+                result = args[0]
+            else:
+                result = args[0] + args[1]
         elif op_name == "-":
             if len(args) == 1:
                 result = -args[0]
@@ -304,6 +308,22 @@ class Context:
             result = args[0] ** args[1]
         elif op_name == "..":
             result = args[0], args[1]
+        elif op_name == "||":
+            result = args[0] or args[1]
+        elif op_name == "&&":
+            result = args[0] or args[1]
+        elif op_name == "<":
+            result = args[0] < args[1]
+        elif op_name == ">":
+            result = args[0] > args[1]
+        elif op_name == "<=":
+            result = args[0] <= args[1]
+        elif op_name == ">=":
+            result = args[0] >= args[1]
+        elif op_name == "==":
+            result = args[0] == args[1]
+        elif op_name == "!=":
+            result = args[0] != args[1]
         else:
             self.interpreter_error("Bug: Unimplemented compile-time operation: %r(%s)" % (
                 op_name, ", ".join(str(arg) for arg in args)
@@ -544,12 +564,12 @@ class Context:
                         self.interpreter_error("Can only use trace2d on an array")
                     if pitch_val.LAYER != LAYER_COMPTIME or pitch_val.ty not in (int, float):
                         self.interpreter_error("The second argument to trace2d must be an expression for the y pitch")
+                    settings["y"] = [pitch_val.value * i for i in range(trace_val.length)]
                     current_plot["dataTemplates"].append({
                         "rowExprs": [
                             self.evaluate_expr(scope, ("binary-op", "[]", ("known-value", trace_val), ("lit", "int", i)), "trace2d")
                             for i in range(trace_val.length)
                         ],
-                        "y": [pitch_val.value * i for i in range(trace_val.length)],
                         "settings": settings,
                     })
                 elif kind == "layout":
@@ -617,6 +637,22 @@ class Context:
                         return return_value
                     # Remove the binding of the loop variable.
                     scope.pop(for_desc["name"])
+            elif kind == "if":
+                _, if_desc = statement
+                for (cond_expr, body) in if_desc["elifs"]:
+                    cond = self.evaluate_expr(scope, cond_expr, "if")
+                    if cond.LAYER != LAYER_COMPTIME:
+                        self.interpreter_error("Condition for if must be compile-time")
+                    if cond.value:
+                        return_value = self.execute(scope, body)
+                        if return_value:
+                            return return_value
+                        break
+                else:
+                    if if_desc["else"] is not None:
+                        return_value = self.execute(scope, if_desc["else"])
+                        if return_value:
+                            return return_value
             elif kind == "return":
                 _, e = statement
                 if e is None:
