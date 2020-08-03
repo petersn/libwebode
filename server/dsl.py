@@ -148,17 +148,16 @@ def func_Checkbox(ctx, scope):
     else:
         ctx.type_check_assert(args[0], "str")
         desired_name = args[0].value
-    adj_var = ctx.make_adjustable_parameter(
+    comp_param, result = ctx.get_compilation_parameter(
         desired_name=prefix_join(scope["@name_prefix"], desired_name),
         default_value=False,
-        name_must_be_exact=False,
     )
     ctx.widgets.append({
         "kind": "checkbox",
-        "name": adj_var.name,
-        "recomp": True,
+        "name": comp_param,
+        "recompile": True,
     })
-    return adj_var
+    return CompileTimeData(bool, result)
 
 def func_Selector(ctx, scope):
     args = scope["@args"]
@@ -172,18 +171,17 @@ def func_Selector(ctx, scope):
     # Take the remaining arguments and select over them.
     for arg in args:
         ctx.type_check_assert(arg, "Function")
-    adj_var = ctx.make_adjustable_parameter(
+    comp_param, result = ctx.get_compilation_parameter(
         desired_name=prefix_join(scope["@name_prefix"], desired_name),
         default_value=0,
-        name_must_be_exact=False,
     )
     ctx.widgets.append({
         "kind": "selector",
-        "name": adj_var.name,
+        "name": comp_param,
         "selections": [arg.value.name for arg in args],
-        "recomp": True,
+        "recompile": True,
     })
-    return adj_var
+    return args[result] #CompileTimeData(type(args[result]), args[result])
 
 def func_Uniform(ctx, scope):
     return Expr(LAYER_CONST, "Uniform", [scope["low"], scope["high"]])
@@ -242,10 +240,12 @@ DEFAULT_HEATMAP_DATA_SETTINGS = {
 }
 
 class Context:
-    def __init__(self):
+    def __init__(self, external_compilation_parameters=None):
+        self.external_compilation_parameters = external_compilation_parameters.copy() or {}
         self.all_variables = {}
         self.array_variables = {}
         self.adjustable_parameters = {}
+        self.compilation_parameters = {}
         self.variable_initializers = {}
         self.variable_drivers = {}
         self.widgets = []
@@ -424,6 +424,13 @@ class Context:
                 return value
             self.register_variable(var_name)
             return self.all_variables[var_name]
+        elif kind == "prime":
+            _, var_expr = expr
+            var = self.evaluate_expr(scope, var_expr, purpose_name)
+            self.type_check_assert(var, "var")
+            new_name = var.name + "'"
+            self.register_variable(new_name)
+            return self.all_variables[new_name]
         elif kind == "dot":
             # Right now we only support indexing global.
             _, lhs, name = expr
@@ -522,6 +529,12 @@ class Context:
             if name in self.variable_initializers:
                 self.variable_initializers.pop(name)
             order += 1
+
+    def get_compilation_parameter(self, desired_name, default_value):
+        # First, determine the final name that we're giving to this request.
+        final_name = dict_insert_no_collision(self.compilation_parameters, desired_name, lambda final_name: final_name)
+        # If we have an external definition for this value then get this value.
+        return final_name, self.external_compilation_parameters.get(final_name, default_value)
 
     def make_adjustable_parameter(self, desired_name, default_value, name_must_be_exact=True):
         if desired_name not in self.adjustable_parameters:
@@ -1064,6 +1077,7 @@ class Context:
         getRNGState: () => [...xoshiro128ss_state[0]],
         setRNGState: (state) => {
             xoshiro128ss_state[0] = [...state];
+            boxMullerCache[0] = null;
         },
         plots: %(plots)s,
         widgets: %(widgets)s,

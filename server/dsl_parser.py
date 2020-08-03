@@ -6,12 +6,12 @@ import string
 import pprint
 
 identifier_start_chars = set(string.ascii_letters + "_$")
-identifier_chars       = set(string.ascii_letters + string.digits + "_'")
+identifier_chars       = set(string.ascii_letters + string.digits + "_")
 def valid_identifier(s):
     return s and s[0] in identifier_start_chars and all(c in identifier_chars for c in s)
 
 whitespace = set(" \t\n")
-symbol_characters = set("()[]{}.,?=+-*/%:<>!;|&~^")
+symbol_characters = set("()[]{}.,?=+-*/%:<>!;|&~^'")
 length_two_symbols = {
     "<=", ">=", "==", "!=",
     "+=", "-=", "*=", "/=", "%=",
@@ -206,7 +206,7 @@ class Lexer:
                     self.advance()
                 # Accept scientific notation.
                 if self.match("e", "E"):
-                    if self.peek() in string.digits + "+-" :
+                    if self.peek() in string.digits + "+-":
                         self.advance()
                     else:
                         raise LexError("Scientific notation exponent missing after e", self.stream_pos)
@@ -347,6 +347,8 @@ class Parser:
                 e = "binary-op", "[]", e, index
             elif self.match(("symbol", ".")):
                 e = "dot", e, self.parse_var()
+            elif self.match(("symbol", "'")):
+                e = "prime", e
             else:
                 break
         return e
@@ -395,6 +397,8 @@ class Parser:
         for type_keyword in ("var", "dyn", "const", "int", "float"):
             if self.match(("keyword", type_keyword)):
                 return type_keyword
+        if self.match(("var", "str")):
+            return "var"
         raise self.parse_error("Expected type")
 
     def parse_block(self):

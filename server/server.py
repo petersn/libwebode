@@ -23,7 +23,8 @@ class AllowCORS:
 class CompileHandler(AllowCORS, tornado.web.RequestHandler):
     def post(self):
         payload = json.loads(self.request.body)
-        ctx = dsl.Context()
+        print("Compilation parameters:", payload["compilation_parameters"])
+        ctx = dsl.Context(payload["compilation_parameters"])
         try:
             ast = dsl_parser.parse(payload["code"])
             ctx.execute(None, ast)

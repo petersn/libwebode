@@ -345,21 +345,22 @@ class ResultsWindow extends React.Component {
         if (this.state.widgetStates.hasOwnProperty(name)) {
             return this.state.widgetStates[name];
         }
-        this.updateWidgetValueNoCheck(name, defaultValue);
+        this._updateWidgetValueNoCheck(name, defaultValue);
         return defaultValue;
     }
 
-    updateWidgetValueNoCheck(name, newValue) {
+    _updateWidgetValueNoCheck(name, newValue) {
         this.setState({widgetStates: {...this.state.widgetStates, [name]: newValue}});
     }
 
-    updateWidgetValue(name, newValue) {
-        const oldValue = this.getWidgetValue(name, newValue);
+    updateWidgetValue(widgetSpec, newValue) {
+        const oldValue = this.getWidgetValue(widgetSpec.name, newValue);
+        console.log("updateWidgetValue:", widgetSpec, oldValue, "->", newValue);
         if (oldValue !== newValue) {
-            this.props.parent.setSimParameter(name, newValue);
+            this.props.parent.setSimParameter(widgetSpec.name, newValue, widgetSpec.recompile === true);
             this.props.parent.rerunSimulation();
         }
-        this.updateWidgetValueNoCheck(name, newValue);
+        this._updateWidgetValueNoCheck(widgetSpec.name, newValue);
     }
 
     applyAllParameters() {
@@ -367,7 +368,7 @@ class ResultsWindow extends React.Component {
             const name = widgetSpec.name;
             if (!this.state.widgetStates.hasOwnProperty(name))
                 continue;
-            this.props.parent.setSimParameter(name, this.state.widgetStates[name]);
+            this.props.parent.setSimParameter(name, this.state.widgetStates[name], widgetSpec.recompile === true);
         }
     }
 
@@ -406,7 +407,7 @@ class ResultsWindow extends React.Component {
                     max={widgetSpec.high}
                     value={value}
                     step={step}
-                    onChange={(event) => { this.updateWidgetValue(widgetSpec.name, event.target.value); }}
+                    onChange={(event) => { this.updateWidgetValue(widgetSpec, event.target.value); }}
                 />
                 <span style={{...liftedTextStyle, whiteSpace: "pre-wrap"}}>({String(value).padStart(fixedWidth)}) [{widgetSpec.low} - {widgetSpec.high}]</span>
             </div>;
@@ -416,9 +417,9 @@ class ResultsWindow extends React.Component {
                 <span style={textStyle}>{widgetSpec.name}:</span>
                 <input
                     type="checkbox"
-                    value={value}
-                    onChange={(event) => { this.updateWidgetValue(widgetSpec.name, event.target.value); }}
-                    style={{transform: "scale(1.5)"}}
+                    checked={value}
+                    onChange={(event) => { this.updateWidgetValue(widgetSpec, event.target.checked); }}
+                    style={{transform: "scale(1.5)", marginRight: "10px"}}
                 />
             </div>;
         } else if (widgetSpec.kind === "selector") {
@@ -439,7 +440,7 @@ class ResultsWindow extends React.Component {
                         }}
                         key={i}
                         onClick={() => {
-                            this.updateWidgetValue(widgetSpec.name, i);
+                            this.updateWidgetValue(widgetSpec, i);
                         }}
                     >
                         {optionName}
@@ -486,7 +487,7 @@ class App extends React.Component {
         super();
         this.editorRef = React.createRef();
         this.parametersRef = React.createRef();
-        this.state = {val: -1, plotStructs: [], widgetSpecs: []};
+        this.state = {val: -1, plotStructs: [], widgetSpecs: [], compilationParameters: {}};
         this.simData = null;
         this.simCtx = null;
         this.simRNGStartingState = null;
@@ -607,9 +608,23 @@ class App extends React.Component {
             alert(message);
     }
 
-    setSimParameter(name, value) {
+    setSimParameter(name, value, isCompilationParameter) {
         if (this.simData === null)
             return;
+        console.log(name, value, isCompilationParameter);
+        if (isCompilationParameter) {
+            // Determine if this is a change.
+            const oldValue = this.state.compilationParameters[name];
+            this.setState(
+                {compilationParameters: {...this.state.compilationParameters, [name]: value}},
+                () => {
+                    if (oldValue !== value && this.editorRef.current) {
+                        this.onCompile(this.editorRef.current.state.code);
+                    }
+                },
+            );
+            return;
+        }
         if (!this.simData.parameterTable.hasOwnProperty(name)) {
             //this.setDialog("BUG BUG BUG: Attempt to set invalid parameter: " + name);
             return;
@@ -644,7 +659,10 @@ class App extends React.Component {
         const response = await fetch(SERVER_HOST + "/compile", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({code}),
+            body: JSON.stringify({
+                code,
+                compilation_parameters: this.state.compilationParameters,
+            }),
         });
         const result = await response.json();
         if (result.error) {
