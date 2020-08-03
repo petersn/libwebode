@@ -5,6 +5,7 @@ import "codemirror/lib/codemirror.css";
 import "codemirror/theme/material.css";
 import RawCodeMirror from "codemirror";
 import createPlotlyComponent from "react-plotly.js/factory";
+const ode45 = require('ode45-cash-karp')
 
 const SERVER_HOST = "http://localhost:50505";
 
@@ -480,6 +481,13 @@ class ResultsWindow extends React.Component {
     }
 }
 
+// TODO: Actually implement this.
+class ButcherIntegrator {
+    constructor(butcherTableau, state, statePrime, callback) {
+        this.butcherTableau = butcherTableau;
+    }
+}
+
 //const libwebode = require("./libwebode.js");
 
 class App extends React.Component {
@@ -515,8 +523,8 @@ class App extends React.Component {
     async rerunSimulation(reseed) {
         if (this.simData === null)
             return;
-        if (!["euler", "rk4"].includes(this.simData.settings.integrator)) {
-            this.setDialog("Unsupported integrator " + this.simData.settings.integrator + ", must select one of: euler, rk4");
+        if (!["euler", "rk4", "cash-karp"].includes(this.simData.settings.integrator)) {
+            this.setDialog("Unsupported integrator " + this.simData.settings.integrator + ", must select one of: euler, rk4, cash-karp");
             return;
         }
         if (reseed) {
@@ -530,56 +538,78 @@ class App extends React.Component {
         const stepSize = Math.max(1e-6, this.simData.settings.stepsize);
         const {state, statePrime} = this.simCtx;
         // This first getDerivative is to fill in zeroth order variables for plotting.
-        this.simData.getDerivative(this.simCtx, t, stepSize);
+        this.simData.getDerivative(this.simCtx, t, stepSize, state, statePrime);
         this.simData.extractPlotDatum(this.simCtx, t, stepSize);
         let lastPlotGrab = t;
 
         // RK4 data structures.
-        const startingPointBuffer = new Float64Array(state.length);
+        let startingPointBuffer = null;
         const derivativeBuffers = [];
-        for (let i = 0; i < 3; i++)
-            derivativeBuffers.push(new Float64Array(statePrime.length));
+        if (this.simData.settings.integrator === "rk4") {
+            startingPointBuffer = new Float64Array(state.length);
+            for (let i = 0; i < 3; i++)
+                derivativeBuffers.push(new Float64Array(statePrime.length));
+        }
+
+        // Cash-Karp integrator.
+        let cashKarpIntegrator = null;
+        if (this.simData.settings.integrator === "cash-karp") {
+            const cashKarpStep = (dydt, y, t) => {
+                // WARNING:
+                // This stepSize argument is basically a total lie.
+                // When using the Cash-Karp integrator you cannot rely on globalStepSize.
+                this.simData.getDerivative(this.simCtx, t, stepSize, y, dydt);
+            };
+            cashKarpIntegrator = ode45(
+                state, cashKarpStep, 0,0, stepSize, {tol: this.simData.settings.tolerance},
+            );
+        }
 
         while (t < this.simData.settings.simtime) {
             if (this.simData.settings.integrator === "euler") {
                 // Do a first-order Euler step.
-                this.simData.getDerivative(this.simCtx, t, stepSize);
+                this.simData.getDerivative(this.simCtx, t, stepSize, state, statePrime);
                 for (let i = 0; i < state.length; i++)
                     state[i] += stepSize * statePrime[i];
+                t += stepSize;
             } else if (this.simData.settings.integrator === "rk4") {
                 // Copy the starting state.
                 startingPointBuffer.set(state);
 
                 // First derivative evaluation.
-                this.simData.getDerivative(this.simCtx, t, stepSize / 2);
-                derivativeBuffers[0].set(statePrime);
+                this.simData.getDerivative(this.simCtx, t, stepSize / 2, state, derivativeBuffers[0]);
 
                 // Second derivative evaluation.
                 for (let i = 0; i < state.length; i++)
                     state[i] += (stepSize / 2) * statePrime[i];
-                this.simData.getDerivative(this.simCtx, t + stepSize / 2, stepSize / 2);
-                derivativeBuffers[1].set(statePrime);
+                this.simData.getDerivative(this.simCtx, t + stepSize / 2, stepSize / 2, state, derivativeBuffers[1]);
 
                 // Third derivative evaluation.
                 state.set(startingPointBuffer);
                 for (let i = 0; i < state.length; i++)
                     state[i] += (stepSize / 2) * statePrime[i];
-                this.simData.getDerivative(this.simCtx, t + stepSize / 2, stepSize / 2);
-                derivativeBuffers[2].set(statePrime);
+                this.simData.getDerivative(this.simCtx, t + stepSize / 2, stepSize / 2, state, derivativeBuffers[2]);
 
                 // Fourth derivative evaluation.
                 state.set(startingPointBuffer);
                 for (let i = 0; i < state.length; i++)
                     state[i] += stepSize * statePrime[i];
-                this.simData.getDerivative(this.simCtx, t, stepSize / 2);
+                this.simData.getDerivative(this.simCtx, t, stepSize / 2, state, statePrime);
 
                 // Final mixture.
                 state.set(startingPointBuffer);
                 for (let i = 0; i < state.length; i++)
                     state[i] += (stepSize / 6) * (derivativeBuffers[0][i] + 2 * derivativeBuffers[1][i] + 2 * derivativeBuffers[2][i] + statePrime[i]);
+
+                t += stepSize;
+            } else if (this.simData.settings.integrator === "cash-karp") {
+                // Ugh, for some reason their integrator interface has no method that just takes a single step.
+                // (For example .steps(n) wants n to be the limit on the *total* number of steps so far.)
+                // Here I hack in a time limit that we definitely won't hit in one step.
+                cashKarpIntegrator.step(t + 100.0 + stepSize * 100);
+                t = cashKarpIntegrator.t;
             }
 
-            t += stepSize;
             if (t >= lastPlotGrab + this.simData.settings.plotperiod) {
                 this.simData.extractPlotDatum(this.simCtx, t, stepSize);
                 lastPlotGrab = t;

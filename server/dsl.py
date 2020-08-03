@@ -294,10 +294,10 @@ class Context:
             closure_scope(name)
         self.plots = {}
         self.settings = {
-            "integrator": "rk4",
-            "tolerance": 1e-2,
-            "stepsize": 1e-1,
-            "plotperiod": 0.02,
+            "integrator": "cash-karp",
+            "tolerance": 1e-4,
+            "stepsize": 0.1,
+            "plotperiod": 0, # By default plot after every step.
             "simtime": 10.0,
         }
         self.most_recent_line_number = 1
@@ -1064,12 +1064,13 @@ class Context:
             const {state, scratch, parameters} = ctx;
             %(initialization_code)s
         },
-        getDerivative: (ctx, t, dt) => {
-            const {state, statePrime, scratch, parameters} = ctx;
+        getDerivative: (ctx, t, dt, state, statePrime) => {
+            // NB: We don't necessarily use the statePrime from ctx!
+            const {scratch, parameters} = ctx;
             %(derivative_code)s
         },
         extractPlotDatum: (ctx, t, dt) => {
-            const {state, statePrime, scratch, parameters, plotData} = ctx;
+            const {state, scratch, parameters, plotData} = ctx;
             let fillRow = null;
             %(extract_plot_datum)s
         },
