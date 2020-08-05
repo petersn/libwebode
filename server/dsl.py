@@ -272,17 +272,33 @@ class Context:
             "@current_plot": None,
         }
         self.always_global_variables = {"globalTime", "globalStepSize", "e", "pi"}
-        for name in ["exp", "log", "cos", "sin", "sqrt", "abs", "floor", "ceil", "round"]:
+        for name, comp_time_func in {
+            "exp": math.exp,
+            "log": math.log,
+            "cos": math.cos,
+            "sin": math.sin,
+            "sqrt": math.sqrt,
+            "abs": abs,
+            "floor": math.floor,
+            "ceil": math.ceil,
+            "round": round,
+        }.items():
             # Due to Python closures just saving their enclosing scope by reference
             # we have to do this annoying trick with wrapping with another scope.
-            def closure_scope(name):
+            def closure_scope(name, comp_time_func):
+                def body_func(ctx, scope):
+                    arg = scope["x"]
+                    if arg.LAYER == LAYER_COMPTIME:
+                        result = comp_time_func(arg.value)
+                        return CompileTimeData(type(result), result)
+                    return Expr(LAYER_DYN, name, [arg])
                 self.root_scope[name] = Function(
                     name=name,
                     args=[("x", "dyn")],
                     return_type="dyn",
-                    body=lambda ctx, scope: Expr(LAYER_DYN, name, [scope["x"]]),
+                    body=body_func,
                 )
-            closure_scope(name)
+            closure_scope(name, comp_time_func)
         for name in ["min", "max"]:
             def closure_scope(name):
                 self.root_scope[name] = Function(
@@ -1048,6 +1064,11 @@ class Context:
     }
     function wienerDerivative(dt) {
         return gaussianRandom() / Math.sqrt(dt);
+    }
+    function makeWienerProcess() {
+        const cache = [];
+        return () => {
+        };
     }
     return {
         allocate: () => {
