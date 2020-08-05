@@ -291,7 +291,7 @@ class Context:
                     if arg.LAYER == LAYER_COMPTIME:
                         result = comp_time_func(arg.value)
                         return CompileTimeData(type(result), result)
-                    return Expr(LAYER_DYN, name, [arg])
+                    return Expr(arg.layer, name, [arg])
                 self.root_scope[name] = Function(
                     name=name,
                     args=[("x", "dyn")],
