@@ -5,7 +5,10 @@ import "codemirror/lib/codemirror.css";
 import "codemirror/theme/material.css";
 import RawCodeMirror from "codemirror";
 import createPlotlyComponent from "react-plotly.js/factory";
-const ode45 = require('ode45-cash-karp')
+import * as d3 from "d3";
+import { update } from "plotly.js/lib/core";
+//const ode45 = require('ode45-cash-karp');
+const ode45 = require("./ode45cashkarpmodified.js");
 
 const SERVER_HOST = "http://localhost:50505";
 
@@ -25,16 +28,18 @@ RawCodeMirror.defineSimpleMode("odelang", {
         // Match strings.
         {regex: /"(?:[^\\]|\\.)*?(?:"|$)/, token: "string"},
         // Match keywords.
-        {regex: /(?:javascript|array|global|fn|as|for|in|if|else|return|native|var|dyn|const|int|float|Function|plot|title|trace|trace2d|layout|simoptions)\b/, token: "keyword"},
+        {regex: /(?:javascript|array|global|fn|as|with|for|in|if|else|return|native|var|dyn|const|int|float|unit|Function|plot|title|trace|trace2d|layout|options|optim|objective|tunable)\b/, token: "keyword"},
         // Match initialization and driving.
         {regex: /~|<-/, token: "drive"},
         // Match built-ins.
-        {regex: /(?:Uniform|Slider|Selector|Checkbox|Gaussian|WienerProcess|WienerDerivative|D|Integrate|exp|log|sin|cos|sqrt|abs|floor|ceil|round|min|max|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
-        {regex: /(?:globalTime|globalStepSize|e|pi|tolerance|stepsize|plotperiod|integrator|simtime)\b/, token: "atom"},
+        {regex: /(?:Slider|Selector|Checkbox|Uniform|Gaussian|Gamma|Beta|Frechet|PoissonProcess|WienerProcess|WienerDerivative|WienerDerivativeUnstable|D|Integrate|exp|log|sin|cos|sqrt|abs|floor|ceil|round|min|max|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
+        {regex: /(?:globalTime|globalStepSize|e|pi|true|false|tolerance|stepsize|plotperiod|integrator|simtime|minstep|maxstep|mcsamples|randomseed|processscale|mcpercentile|prefix|unitname|crossoverprob|diffweight|populationsize|maxsteps|patience|patiencefactor)\b/, token: "atom"},
         // Match embedded javascript.
         //{regex: /javascript\s{/, token: "meta", mode: {spec: "javascript", end: /}/}},
         // Match numbers.
         {regex: /0x[a-f\d]+|[-+]?(?:\.\d+|\d+\.?\d*)(?:e[-+]?\d+)?/i, token: "number"},
+        // Match units.
+        {regex: /`.*`/, token: "units"},
         // Handle comments.
         {regex: /\/\/.*/, token: "comment"},
         {regex: /\/\*/, token: "comment", next: "comment"},
@@ -59,156 +64,15 @@ RawCodeMirror.defineSimpleMode("odelang", {
 });
 
 let BAD_STARTING_CODE = null;
-let STARTING_CODE = `// System
+let STARTING_CODE = "// System\n\n\n";
 
-
-`
-
-BAD_STARTING_CODE = `// System
-
-cycle ~ 1;
-cycle'' <- -cycle * Slider(0, 3);
-plot cycle;
-
-fn index($x: [dyn], $i: int) -> dyn {
-  if $i < 0 || $i >= len($x) {
-    return 0.0;
-  }
-  return $x[$i];
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-fn second_order_upwind($x: [dyn], $i: int) -> dyn {
-  return
-    + 3*index($x, $i - 1)
-    - 4*index($x, $i + 0)
-    +   index($x, $i + 1);
+function tail(a) {
+    return a[a.length - 1];
 }
-
-$N := 100;
-
-array transport[$N];
-
-// Initial conditions.
-transport[0] ~ 1;
-for $i in 1 .. $N {
-  transport[$i] ~ 0;
-}
-
-speed <- Slider(0, 3);
-
-for $i in 0 .. $N {
-  transport'[$i] <- speed * second_order_upwind(transport, $i);
-}
-
-array logTransport[$N];
-for $i in 0 .. $N {
-  logTransport[$i] <- log(1e-3 + transport[$i]);
-}
-
-plot {
-  title "Transport";
-  trace2d logTransport 1 {}
-}
-
-simoptions {
-  simtime: 10,
-}
-
-`
-
-const OLD_STARTING_CODE = `// Simple oscillator
-
-/*
-freq <- Slider(1, 2);
-x ~ Uniform(-1, 1);
-x'' <- -freq * x;
-*/
-
-$N := 4;
-
-cycle ~ 1;
-cycle'' <- -cycle * Slider(0, 2);
-plot cycle;
-
-fn logistic($x) {
-  return exp($x) / (1 + exp($x));
-}
-
-fn ewma($x: dyn, $timeConstant: dyn) -> dyn {
-  result ~ 0;
-  //smoothing <- 1 / ((1.01 + global.cycle) * $timeConstant);
-  smoothing <- (1 + global.cycle) / $timeConstant;
-  result' <- ($x - result) * smoothing;
-  return result;
-}
-
-array x[4];
-
-for $i in 0 .. $N {
-  x[$i] ~ $i;
-  x'[$i] <- -x[$i];
-}
-
-plot {
-  title "Heatmap";
-  trace2d x 0.1 {}
-}
-
-//x <- WienerProcess();
-
-//x' <- WienerDerivative();
-//y <- ewma(x, 1.0);
-
-//plot x;
-//plot y;
-
-simoptions {
-  integrator: "rk4",
-  stepsize: 0.1,
-  simtime: 10,
-}
-`;
-
-/*
-$x := 1;
-
-print($x);
-
-freq ~ Slider(1, 2);
-x ~ Uniform(-1, 1);
-x'' <- -freq * x;
-
-plot x;
-simtime 10;
-
-fn index($x: [dyn], $i: int) -> dyn {
-  if $i < 0 || $i >= len($x) {
-    return 0.0;
-  }
-  return $x[$i];
-}
-
-fn second_order_upwind($x: [dyn], $i: int) -> dyn {
-  return
-    + 3*index($x, $i - 1)
-    - 4*index($x, $i + 0)
-    +   index($x, $i + 1);
-}
-
-fn ewma($x: dyn, $smoothing: float) -> dyn {
-    result ~ 0;
-    // Using (1 / $smoothing) here allows constant folding to help out.
-    result' <- ($x - result) * (1 / $smoothing);
-    return result;
-}
-
-freq ~ Slider(1, 2);
-x ~ Uniform(-1, 1);
-x'' <- -freq * x;
-
-plot x;
-simtime 10;
-*/
 
 class CodeEditor extends React.Component {
     constructor() {
@@ -274,9 +138,11 @@ class CodeEditor extends React.Component {
                         "Ctrl-S": () => {
                             this.props.parent.onSaveCode(this.state.code);
                         },
+                        /*
                         "Ctrl-R": () => {
                             this.props.parent.onReload();
                         },
+                        */
                         "Tab": (cm) => {
                             cm.replaceSelection("  ", "end");
                         },
@@ -336,10 +202,83 @@ class CodeEditor extends React.Component {
     }
 }
 
+const widgetTextStyle = {
+    color: "white",
+    marginLeft: "10px",
+    marginRight: "10px",
+    marginTop: "-5px",
+    marginBottom: "-5px",
+    // Lift the text up a little to line up with the range input.
+    // The display: inline-block is required to make transform work.
+    display: "inline-block",
+    fontFamily: "monospace",
+    fontSize: "130%",
+};
+const liftedTextStyle = {...widgetTextStyle, transform: "translateY(-25%)"};
+const widgetBoxStyle = {
+    height: "22px",
+    border: "2px solid black",
+    borderRadius: "10px",
+    backgroundColor: "#555",
+    padding: "10px",
+    verticalAlign: "middle",
+};
+
+const objectiveFormat = d3.format(".4r");
+
+class OptimizerBox extends React.Component {
+    constructor() {
+        super();
+        this.state = {objectivePlot: null, totalCalls: null};
+    }
+
+    updateOptimizerPlot(objectivePlot, totalCalls) {
+        this.setState({objectivePlot, totalCalls});
+    }
+
+    render() {
+        let plotX = null;
+        let plotY = null;
+        if (this.state.objectivePlot !== null) {
+            plotX = this.state.objectivePlot.x.slice();
+            plotY = this.state.objectivePlot.y.slice();
+            plotX.push(this.state.totalCalls);
+            plotY.push(tail(plotY))
+        }
+        return <div style={{...widgetBoxStyle, height: "auto"}}>
+            <span style={widgetTextStyle}>Optimize</span>
+            <button
+                style={{marginRight: "10px", marginBottom: "5px"}}
+                onClick={() => { this.props.parent.activateOptimizer(this.props.widgetSpec, this); }}
+            >
+                Start/Stop
+            </button>
+            {this.state.objectivePlot !== null && <>
+                <span style={widgetTextStyle}>Calls: {this.state.totalCalls}</span>
+                <span style={widgetTextStyle}>Best: {objectiveFormat(tail(plotY))}</span>
+                <br/>
+                <Plot
+                    data={[{
+                        x: plotX,
+                        y: plotY,
+                        type: "scatter", mode: "lines",
+                    }]}
+                    layout={{
+                        title: "Objective",
+                        width: 500, height: 300,
+                        margin: {l: 30, r: 30, b: 30, t: 30, pad: 4},
+                    }}
+                />
+            </>}
+        </div>;
+    }
+}
+
 class ResultsWindow extends React.Component {
     constructor() {
         super();
         this.state = {widgetStates: {}};
+        this.optimizerRef = React.createRef();
     }
 
     getWidgetValue(name, defaultValue) {
@@ -356,7 +295,7 @@ class ResultsWindow extends React.Component {
 
     updateWidgetValue(widgetSpec, newValue) {
         const oldValue = this.getWidgetValue(widgetSpec.name, newValue);
-        console.log("updateWidgetValue:", widgetSpec, oldValue, "->", newValue);
+        console.log("updateWidgetValue:", widgetSpec.name, oldValue, "->", newValue);
         if (oldValue !== newValue) {
             this.props.parent.setSimParameter(widgetSpec.name, newValue, widgetSpec.recompile === true);
             this.props.parent.rerunSimulation();
@@ -374,48 +313,61 @@ class ResultsWindow extends React.Component {
     }
 
     renderWidget(widgetSpec) {
-        const textStyle = {
-            color: "white",
-            marginLeft: "10px",
-            marginRight: "10px",
-            marginTop: "-5px",
-            marginBottom: "-5px",
-            // Lift the text up a little to line up with the range input.
-            // The display: inline-block is required to make transform work.
-            display: "inline-block",
-            fontFamily: "monospace",
-            fontSize: "130%",
-        };
-        const liftedTextStyle = {...textStyle, transform: "translateY(-25%)"};
-        const widgetBoxStyle = {
-            height: "22px",
-            border: "2px solid black",
-            borderRadius: "10px",
-            backgroundColor: "#555",
-            padding: "10px",
-            verticalAlign: "middle",
-        };
         if (widgetSpec.kind === "slider") {
-            const value = this.getWidgetValue(widgetSpec.name, (widgetSpec.low + widgetSpec.high) / 2);
-            const step = (widgetSpec.high - widgetSpec.low) / 1000;
+            const value = this.getWidgetValue(widgetSpec.name, widgetSpec.default_value);
+            let low = widgetSpec.low;
+            let high = widgetSpec.high;
+            let step = (high - low) / 1000;
+            let sliderPos = value;
+            if (widgetSpec.log) {
+                sliderPos = Math.round(
+                    1000 * (Math.log(value) - Math.log(low)) / (Math.log(high) - Math.log(low))
+                );
+                low = 0;
+                high = 1000;
+                step = 1;
+            }
             // Try to guess a reasonable fixed width.
-            const fixedWidth = String(widgetSpec.high - step).length;
+            let formattedRange;
+            if (widgetSpec.format !== null) {
+                const f = d3.format(widgetSpec.format);
+                const fixedWidth = Math.max(
+                    f(widgetSpec.high - step).length,
+                    f(widgetSpec.high).length,
+                );
+                formattedRange = `(${f(value).padStart(fixedWidth)}) [${f(widgetSpec.low)} - ${f(widgetSpec.high)}]`;
+            } else {
+                const fixedWidth = String(widgetSpec.high - step).length;
+                formattedRange = `(${String(value).padStart(fixedWidth)}) [${widgetSpec.low} - ${widgetSpec.high}]`;
+            }
             return <div style={widgetBoxStyle}>
                 <span style={liftedTextStyle}>{widgetSpec.name}:</span>
                 <input
                     type="range"
-                    min={widgetSpec.low}
-                    max={widgetSpec.high}
-                    value={value}
+                    min={low}
+                    max={high}
+                    value={sliderPos}
                     step={step}
-                    onChange={(event) => { this.updateWidgetValue(widgetSpec, event.target.value); }}
+                    onChange={(event) => {
+                        let newValue = event.target.value;
+                        if (widgetSpec.log) {
+                            newValue = Math.exp(
+                                Math.log(widgetSpec.low) + 1e-3 * newValue *
+                                    (Math.log(widgetSpec.high) - Math.log(widgetSpec.low))
+                            );
+                            //newValue = Math.exp(newValue);
+                        }
+                        this.updateWidgetValue(widgetSpec, newValue);
+                    }}
                 />
-                <span style={{...liftedTextStyle, whiteSpace: "pre-wrap"}}>({String(value).padStart(fixedWidth)}) [{widgetSpec.low} - {widgetSpec.high}]</span>
+                <span style={{...liftedTextStyle, whiteSpace: "pre-wrap"}}>
+                    {formattedRange}
+                </span>
             </div>;
         } else if (widgetSpec.kind === "checkbox") {
-            const value = this.getWidgetValue(widgetSpec.name, false);
+            const value = this.getWidgetValue(widgetSpec.name, widgetSpec.default_value);
             return <div style={widgetBoxStyle}>
-                <span style={textStyle}>{widgetSpec.name}:</span>
+                <span style={widgetTextStyle}>{widgetSpec.name}:</span>
                 <input
                     type="checkbox"
                     checked={value}
@@ -424,13 +376,13 @@ class ResultsWindow extends React.Component {
                 />
             </div>;
         } else if (widgetSpec.kind === "selector") {
-            const value = this.getWidgetValue(widgetSpec.name, 0);
+            const value = this.getWidgetValue(widgetSpec.name, widgetSpec.default_value);
             return <div style={widgetBoxStyle}>
-                <span style={textStyle}>{widgetSpec.name}:</span>
+                <span style={widgetTextStyle}>{widgetSpec.name}:</span>
                 {widgetSpec.selections.map((optionName, i) =>
                     <span
                         style={{
-                            ...textStyle,
+                            ...widgetTextStyle,
                             border: value === i ? "2px solid green" : "2px solid black",
                             backgroundColor: value === i ? "#464" : "#444",
                             borderRadius: "10px",
@@ -448,10 +400,17 @@ class ResultsWindow extends React.Component {
                     </span>
                 )}
             </div>;
+        } else if (widgetSpec.kind === "optimizer") {
+            return <OptimizerBox
+                parent={this.props.parent}
+                widgetSpec={widgetSpec}
+                ref={this.optimizerRef}
+            />;
         }
         return <div style={{backgroundColor: "#833"}}>Bad widget spec: <code>{JSON.stringify(widgetSpec)}</code></div>;
     }
 
+    // FIXME: This is currently impure.
     render() {
         const boxStyle = {
             flexGrow: 1,
@@ -499,6 +458,7 @@ class App extends React.Component {
         this.simData = null;
         this.simCtx = null;
         this.simRNGStartingState = null;
+        this.currentlyOptimizingCounter = 0;
     }
 
     componentDidMount() {
@@ -517,25 +477,55 @@ class App extends React.Component {
         this.simCtx = this.simData.allocate();
         if (this.parametersRef.current)
             this.parametersRef.current.applyAllParameters();
+        this.setState({widgetSpecs: this.simData.widgets});
         await this.rerunSimulation(true);
     }
 
-    async rerunSimulation(reseed) {
+    async rerunSimulation(reseed, updatePlots, computeObjective) {
+        if (this.simData.settings.mcsamples <= 1) {
+            return this.rerunSimulationCore(reseed, updatePlots, computeObjective);
+        }
+        console.log("Starting rerun:", this.simData.settings.mcsamples);
+        const objectives = [];
+        for (let sampleIndex = 0; sampleIndex < this.simData.settings.mcsamples; sampleIndex++) {
+            const firstBehavior = reseed ? true : "mc-first";
+            objectives.push(this.rerunSimulationCore(sampleIndex === 0 ? firstBehavior : "mc", updatePlots, computeObjective));
+        }
+        console.log("Objectives:", objectives);
+        if (computeObjective) {
+            let mean = 0.0;
+            for (const obj of objectives)
+                mean += obj;
+            return mean / objectives.length;
+        }
+    }
+
+    rerunSimulationCore(reseed, updatePlots, computeObjective) {
+        updatePlots = updatePlots === undefined ? true : updatePlots;
+        computeObjective = computeObjective === undefined ? false : computeObjective;
         if (this.simData === null)
             return;
         if (!["euler", "rk4", "cash-karp"].includes(this.simData.settings.integrator)) {
             this.setDialog("Unsupported integrator " + this.simData.settings.integrator + ", must select one of: euler, rk4, cash-karp");
             return;
         }
-        if (reseed) {
-            this.simData.reseedRNG();
+        console.log("Starting inner run", reseed, this.simRNGStartingState);
+        if (reseed === true || (reseed === "mc-first" && this.simRNGStartingState === null)) {
+            console.log("Reseeding");
+            if (this.simData.settings.randomseed !== null) {
+                const seed = this.simData.settings.randomseed;
+                this.simData.setRNGState([123 + seed, 314, 159, 265]);
+            } else {
+                this.simData.reseedRNG();
+            }
             this.simRNGStartingState = this.simData.getRNGState();
-        } else if (this.simRNGStartingState !== null) {
+        } else if (this.simRNGStartingState !== null && reseed !== "mc") {
+            console.log("Restoring seed")
             this.simData.setRNGState(this.simRNGStartingState);
         }
         this.simData.initialize(this.simCtx);
         let t = 0.0;
-        const stepSize = Math.max(1e-6, this.simData.settings.stepsize);
+        let stepSize = Math.max(1e-6, this.simData.settings.stepsize);
         const {state, statePrime} = this.simCtx;
         // This first getDerivative is to fill in zeroth order variables for plotting.
         this.simData.getDerivative(this.simCtx, t, stepSize, state, statePrime);
@@ -560,12 +550,22 @@ class App extends React.Component {
                 // When using the Cash-Karp integrator you cannot rely on globalStepSize.
                 this.simData.getDerivative(this.simCtx, t, stepSize, y, dydt);
             };
+            const cashKarpOptions = {
+                tol: this.simData.settings.tolerance,
+                dtMinMag: this.simData.settings.minstep,
+                dtMaxMag: this.simData.settings.maxstep,
+            };
+            console.log("Cash-Karp options:", cashKarpOptions);
             cashKarpIntegrator = ode45(
-                state, cashKarpStep, 0,0, stepSize, {tol: this.simData.settings.tolerance},
+                state, cashKarpStep, 0.0, stepSize, cashKarpOptions,
             );
         }
 
-        while (t < this.simData.settings.simtime) {
+        // The Cash-Karp integrator tries to avoid overstepping, so we allow a slight fudge factor to avoid
+        // getting stuck in an infinite loop where the integrator thinks it's done, but we don't.
+        const fudgeFactor = 1 - 1e-5;
+        let keepGoing = true;
+        while (t < this.simData.settings.simtime * fudgeFactor && keepGoing) {
             if (this.simData.settings.integrator === "euler") {
                 // Do a first-order Euler step.
                 this.simData.getDerivative(this.simCtx, t, stepSize, state, statePrime);
@@ -606,29 +606,232 @@ class App extends React.Component {
                 // Ugh, for some reason their integrator interface has no method that just takes a single step.
                 // (For example .steps(n) wants n to be the limit on the *total* number of steps so far.)
                 // Here I hack in a time limit that we definitely won't hit in one step.
-                cashKarpIntegrator.step(t + 100.0 + stepSize * 100);
+                const notDone = cashKarpIntegrator.step(this.simData.settings.simtime);
+                if (!notDone)
+                    keepGoing = false;
                 t = cashKarpIntegrator.t;
+                stepSize = cashKarpIntegrator.stepSizeActuallyTaken;
             }
 
-            if (t >= lastPlotGrab + this.simData.settings.plotperiod) {
+            if (updatePlots && (
+                // Update if it's been long enough since our last plot period...
+                t >= lastPlotGrab + this.simData.settings.plotperiod
+                // ... or we're on the last sample.
+                || t >= this.simData.settings.simTime
+            )) {
                 this.simData.extractPlotDatum(this.simCtx, t, stepSize);
                 lastPlotGrab = t;
             }
         }
 
-        const plotStructs = [];
-        for (const plotName of Object.keys(this.simData.plots)) {
-            const plotSpec = this.simData.plots[plotName];
-            // The plotSpec has two fields, dataTemplates, and layout.
-            plotStructs.push({
-                data: plotSpec.dataTemplates.map((dataTemplate, i) => ({
-                    ...this.simCtx.plotData[plotName][i],
-                    ...dataTemplate,
-                })),
-                layout: plotSpec.layout,
+        if (updatePlots) {
+            const plotStructs = [];
+            for (const plotName of Object.keys(this.simData.plots)) {
+                const plotSpec = this.simData.plots[plotName];
+                // The plotSpec has two fields, dataTemplates, and layout.
+                plotStructs.push({
+                    data: plotSpec.dataTemplates.map((dataTemplate, i) => ({
+                        ...this.simCtx.plotData[plotName][i],
+                        ...dataTemplate,
+                    })),
+                    layout: plotSpec.layout,
+                });
+            }
+            this.setState({plotStructs});
+        }
+
+        if (computeObjective) {
+            return this.simData.getObjective(this.simCtx, t, stepSize, state);
+        }
+    }
+
+    async activateOptimizer(optimizerWidgetSpec, optimizerBox) {
+        // XXX: FIXME: The proper thing to do here is use a counter,
+        // so that there are no race conditions if you start, stop, start again.
+        // But even more proper would be using a web worker, and doing this in another thread.
+        if (this.currentlyOptimizing) {
+            this.currentlyOptimizing = false;
+            return;
+        }
+        this.currentlyOptimizing = true;
+        console.log("Optimizer widgetSpec:", optimizerWidgetSpec);
+        const nameToWidgetSpec = {};
+        for (const widgetSpec of this.state.widgetSpecs)
+            nameToWidgetSpec[widgetSpec.name] = widgetSpec;
+        const optimizationSpace = {};
+        const isLogParameter = {};
+        for (const tunableName of optimizerWidgetSpec.tunable) {
+            if (!nameToWidgetSpec.hasOwnProperty(tunableName)) {
+                this.setDialog("BUG: Missing tunable parameter for optimizer: " + tunableName);
+                return;
+            }
+            const tunableWidgetSpec = nameToWidgetSpec[tunableName];
+            if (tunableWidgetSpec.kind !== "slider") {
+                this.setDialog("Currently optimization may only be done over sliders");
+                return;
+            }
+            // Optimize in log-space for log sliders.
+            let low = tunableWidgetSpec.low, high = tunableWidgetSpec.high;
+            if (tunableWidgetSpec.log) {
+                low = Math.log(low);
+                high = Math.log(high);
+            }
+            optimizationSpace[tunableName] = [low, high];
+            isLogParameter[tunableName] = tunableWidgetSpec.log;
+        }
+        const makeRandom = () => {
+            const candidate = {};
+            for (const key of Object.keys(optimizationSpace)) {
+                const [low, high] = optimizationSpace[key]
+                candidate[key] = low + Math.random() * (high - low);
+            }
+            return candidate;
+        };
+        const applySettings = (settings, updateGUI) => {
+            //console.log("Applying:", settings);
+            for (const tunableName of Object.keys(settings)) {
+                let value = settings[tunableName];
+                if (isLogParameter[tunableName])
+                    value = Math.exp(value);
+                this.setSimParameter(tunableName, value, false);
+                if (updateGUI && this.parametersRef.current)
+                    this.parametersRef.current._updateWidgetValueNoCheck(tunableName, value);
+            }
+        };
+        let objectiveCalls = [0];
+        let lastRerender = [performance.now()];
+        let bestSeenObjective = [Infinity];
+        let bestSeenSettings = [{}];
+        let objectivePlot = {x: [], y: []};
+        const computeObjective = async (settings) => {
+            if (!this.currentlyOptimizing)
+                return "early-stop";
+            applySettings(settings, false);
+            const now = performance.now();
+            // Rate limit the rerendering.
+            const updatePlots = now > (lastRerender[0] + 1000 * optimizerWidgetSpec.options.plotperiod);
+            objectiveCalls[0]++;
+            const obj = await this.rerunSimulation(false, updatePlots, true);
+            if (obj < bestSeenObjective[0]) {
+                bestSeenObjective[0] = obj;
+                bestSeenSettings[0] = {...settings};
+                objectivePlot.x.push(objectiveCalls[0]);
+                objectivePlot.y.push(bestSeenObjective[0]);
+            }
+            if (updatePlots) {
+                // Update all widgets.
+                optimizerBox.updateOptimizerPlot(objectivePlot, objectiveCalls[0]);
+                // Do a slight sleep to allow rerender. This is super duper hacky!
+                await sleep(2);
+                // Set the rerender time *after* rerendering.
+                lastRerender[0] = performance.now();
+                applySettings(settings, true);
+            }
+            return obj;
+        };
+        await this.differentialEvolution(
+            optimizerWidgetSpec.options,
+            optimizationSpace,
+            makeRandom,
+            computeObjective,
+        );
+        optimizerBox.updateOptimizerPlot(objectivePlot, objectiveCalls[0]);
+        applySettings(bestSeenSettings[0], true);
+        await this.rerunSimulation();
+        this.currentlyOptimizing = false;
+    }
+
+    async differentialEvolution(options, optimizationSpace, makeRandom, computeObjective) {
+        if (options.populationsize < 4) {
+            this.setDialog("Differential evolution requires a populationsize of at least 4");
+            return;
+        }
+        // Make an initial pool of agents.
+        const agents = [];
+        for (let i = 0; i < options.populationsize; i++) {
+            agents.push({
+                "settings": makeRandom(),
+                "objective": null,
             });
         }
-        this.setState({plotStructs, widgetSpecs: this.simData.widgets});
+        // Fill in the initial objective values.
+        for (const agent of agents) {
+            agent.objective = await computeObjective(agent.settings);
+        }
+        // Do optimization.
+        const allProblemDimensions = Object.keys(agents[0].settings);
+        console.log(allProblemDimensions);
+        let bestObjectiveEverSeen = Infinity;
+        let patience = options.patience;
+        optimization_loop:
+        for (let optimizationStep = 0; optimizationStep < options.maxsteps; optimizationStep++) {
+            console.log("Optimization step:", optimizationStep, bestObjectiveEverSeen);
+            patience--;
+            for (let xIndex = 0; xIndex < agents.length; xIndex++) {
+                // Rejection sample three more distinct indices.
+                // Golly gee, ECMAScript has an impoverished standard library. :(
+                const indices = [xIndex, 0, 0, 0];
+                for (let i = 1; i < 4; i++) {
+                    while (true) {
+                        // Pick a random agent.
+                        indices[i] = Math.floor(Math.random() * agents.length);
+                        // Check if the agent is distinct from all previous.
+                        let isDistinct = true;
+                        for (let j = 0; j < i; j++)
+                            if (indices[i] === indices[j])
+                                isDistinct = false;
+                        if (isDistinct)
+                            break;
+                    }
+                }
+                const xAgent = agents[xIndex].settings;
+                const aAgent = agents[indices[1]].settings;
+                const bAgent = agents[indices[2]].settings;
+                const cAgent = agents[indices[3]].settings;
+                // Crossover a new candidate.
+                const R = Math.floor(Math.random() * allProblemDimensions.length);
+                const newSettings = {};
+                for (let i = 0; i < allProblemDimensions.length; i++) {
+                    const dim = allProblemDimensions[i];
+                    const r = Math.random();
+                    let val = xAgent[dim];
+                    if (r < options.crossoverprob || i === R) {
+                        val = aAgent[dim] + options.diffweight * (bAgent[dim] - cAgent[dim]);
+                    }
+                    // Constrain the value.
+                    // In order to prevent accumulation against a constraint boundary
+                    // pick a random value between the original val and the constrained val.
+                    // However, in order to converge a bit more quickly towards a constraint,
+                    // we square the lerp coefficient.
+                    const [boundLow, boundHigh] = optimizationSpace[dim];
+                    const constrainedVal = Math.max(boundLow, Math.min(boundHigh, val));
+                    const lerp = Math.pow(Math.random(), 2);
+                    newSettings[dim] = lerp * xAgent[dim] + (1 - lerp) * constrainedVal;
+                }
+                // Evaluate the new candidate, and keep it if better.
+                const newObjective = await computeObjective(newSettings);
+                if (newObjective === "early-stop")
+                    break optimization_loop;
+                if (newObjective <= agents[xIndex].objective)
+                    agents[xIndex] = {settings: newSettings, objective: newObjective};
+                const patienceThreshold = bestObjectiveEverSeen > 0 ?
+                    bestObjectiveEverSeen * (1 - options.patienceFactor) :
+                    bestObjectiveEverSeen * (1 + options.patienceFactor);
+                if (newObjective < patienceThreshold * options.patiencefactor) {
+                    bestObjectiveEverSeen = newObjective;
+                    patience = options.patience;
+                }
+            }
+            if (patience === 0) {
+                break optimization_loop;
+            }
+        }
+        // Do a final application of our best settings.
+        let bestAgent = agents[0];
+        for (const agent of agents)
+            if (agent.objective < bestAgent.objective)
+                bestAgent = agent;
+        return bestAgent;
     }
 
     setDialog(message, timeout) {
@@ -641,7 +844,7 @@ class App extends React.Component {
     setSimParameter(name, value, isCompilationParameter) {
         if (this.simData === null)
             return;
-        console.log(name, value, isCompilationParameter);
+        //console.log(name, value, isCompilationParameter);
         if (isCompilationParameter) {
             // Determine if this is a change.
             const oldValue = this.state.compilationParameters[name];

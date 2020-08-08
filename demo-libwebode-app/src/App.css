@@ -11,6 +11,11 @@ body {
     color: #ab0;
 }
 
+.cm-units {
+    color: red;
+    /*text-shadow: 0px 0px 2px white;*/
+}
+
 .CodeMirror {
     height: 96vh !important;
 }

@@ -8,6 +8,7 @@ import math
 import copy
 import collections
 import dsl_parser
+import dsl_units
 
 def indent_all_lines(count, text):
     prefix = " " * count
@@ -103,12 +104,13 @@ class CompileTimeData(Datum):
         return set()
 
 class Function:
-    def __init__(self, name, args, return_type, body, do_prefix_names=True):
+    def __init__(self, name, args, return_type, body, do_prefix_names=True, named_args=None):
         self.name = name
         self.args = args
         self.return_type = return_type
         self.body = body
         self.do_prefix_names = do_prefix_names
+        self.named_args = named_args or {}
 
 def func_print(ctx, scope):
     m = " ".join(str(i) for i in scope["@args"])
@@ -116,7 +118,7 @@ def func_print(ctx, scope):
     ctx.print_output.append(m)
 
 def func_Slider(ctx, scope):
-    args = scope["@args"]
+    args, opt_args = scope["@args"], scope["@optional_args"]
     if len(args) == 2:
         ctx.type_check_assert(args[0], "float")
         ctx.type_check_assert(args[1], "float")
@@ -127,40 +129,55 @@ def func_Slider(ctx, scope):
         ctx.type_check_assert(args[1], "float")
         ctx.type_check_assert(args[2], "float")
         desired_name, low, high = [arg.value for arg in args]
+    default_value = (low + high) / 2
+    print("OPTIONALS:", opt_args)
+    if "$default" in opt_args:
+        default_value = opt_args["$default"].value
+    print("DEFAULT VALUE:", default_value)
     adj_var = ctx.make_adjustable_parameter(
         desired_name=prefix_join(scope["@name_prefix"], desired_name),
-        default_value=(low + high) / 2,
+        default_value=default_value,
         name_must_be_exact=False,
     )
+    is_log = opt_args["$log"].value if "$log" in opt_args else False
+    if is_log and (low <= 0 or high <= 0):
+        ctx.interpreter_error("Non-positive limit on log Slider")
     ctx.widgets.append({
         "kind": "slider",
         "name": adj_var.name,
         "low": low,
         "high": high,
+        "log": is_log,
+        "format": opt_args["$format"].value if "$format" in opt_args else None,
+        "default_value": default_value,
         "recomp": False,
     })
     return adj_var
 
 def func_Checkbox(ctx, scope):
-    args = scope["@args"]
+    args, opt_args = scope["@args"], scope["@optional_args"]
     if len(args) == 0:
         desired_name = scope["@purpose_name"]
     else:
         ctx.type_check_assert(args[0], "str")
         desired_name = args[0].value
+    default_value = False
+    if "$default" in opt_args:
+        default_value = bool(opt_args["$default"].value)
     comp_param, result = ctx.get_compilation_parameter(
         desired_name=prefix_join(scope["@name_prefix"], desired_name),
-        default_value=False,
+        default_value=default_value,
     )
     ctx.widgets.append({
         "kind": "checkbox",
         "name": comp_param,
+        "default_value": default_value,
         "recompile": True,
     })
     return CompileTimeData(bool, result)
 
 def func_Selector(ctx, scope):
-    args = scope["@args"]
+    args, opt_args = scope["@args"], scope["@optional_args"]
     # Check if the first argument is a string.
     if args[0].LAYER != LAYER_COMPTIME:
         ctx.interpreter_error("All arguments to Selector must be compile time")
@@ -171,23 +188,42 @@ def func_Selector(ctx, scope):
     # Take the remaining arguments and select over them.
     for arg in args:
         ctx.type_check_assert(arg, "Function")
+    default_value = 0
+    if "$default" in opt_args:
+        default_value = bool(opt_args["$default"].value)
     comp_param, result = ctx.get_compilation_parameter(
         desired_name=prefix_join(scope["@name_prefix"], desired_name),
-        default_value=0,
+        default_value=default_value,
     )
     ctx.widgets.append({
         "kind": "selector",
         "name": comp_param,
         "selections": [arg.value.name for arg in args],
+        "default_value": default_value,
         "recompile": True,
     })
     return args[result] #CompileTimeData(type(args[result]), args[result])
 
 def func_Uniform(ctx, scope):
-    return Expr(LAYER_CONST, "Uniform", [scope["low"], scope["high"]])
+    return ctx.constify_via_param("Uniform", Expr(LAYER_CONST, "Uniform", [scope["low"], scope["high"]]))
 
 def func_Gaussian(ctx, scope):
-    return Expr(LAYER_CONST, "Gaussian", [])
+    return ctx.constify_via_param("Gaussian", Expr(LAYER_CONST, "Gaussian", []))
+
+def func_Gamma(ctx, scope):
+    if scope["alpha"].value <= 0 or scope["beta"].value <= 0:
+        ctx.interpreter_error("Gamma(ɑ, β) requires ɑ, β > 0")
+    return ctx.constify_via_param("Gamma", Expr(LAYER_CONST, "Gamma", [scope["alpha"], scope["beta"]]))
+
+def func_Beta(ctx, scope):
+    if scope["alpha"].value <= 0 or scope["beta"].value <= 0:
+        ctx.interpreter_error("Beta(ɑ, β) requires ɑ, β > 0")
+    return ctx.constify_via_param("Beta", Expr(LAYER_CONST, "Beta", [scope["alpha"], scope["beta"]]))
+
+def func_Frechet(ctx, scope):
+    if scope["alpha"].value <= 0:
+        ctx.interpreter_error("Frechet(ɑ) requires ɑ > 0")
+    return ctx.constify_via_param("Frechet", Expr(LAYER_CONST, "Frechet", [scope["alpha"]]))
 
 def func_addDeriv(ctx, scope):
     var = scope["var"]
@@ -201,11 +237,23 @@ def func_subDeriv(ctx, scope):
         ctx.interpreter_error("subDeriv called on already zeroth order variable: %s" % base_name)
     return ctx.all_variables[base_name + ticks[1:]]
 
-def func_WienerDerivative(ctx, scope):
-    return Expr(LAYER_DYN, "WienerDerivative", [])
+def func_PoissonProcess(ctx, scope):
+    result = Expr(LAYER_DYN, "RealizedProcess", [])
+    result.realized_index = ctx.make_realized_process("PoissonProcess", [scope["rate"]])
+    return result
 
 def func_WienerProcess(ctx, scope):
-    return Expr(LAYER_DYN, "WienerProcess", [])
+    result = Expr(LAYER_DYN, "RealizedProcess", [])
+    result.realized_index = ctx.make_realized_process("WienerProcess", [])
+    return result
+
+def func_WienerDerivative(ctx, scope):
+    result = Expr(LAYER_DYN, "RealizedProcess", [])
+    result.realized_index = ctx.make_realized_process("WienerDerivative", [])
+    return result
+
+def func_WienerDerivativeUnstable(ctx, scope):
+    return Expr(LAYER_DYN, "WienerDerivativeUnstable", [])
 
 def func_len(ctx, scope):
     return CompileTimeData(int, scope["arr"].length)
@@ -245,28 +293,40 @@ class Context:
         self.all_variables = {}
         self.array_variables = {}
         self.adjustable_parameters = {}
+        self.expr_initialized_parameters = {}
         self.compilation_parameters = {}
         self.variable_initializers = {}
-        self.variable_drivers = {}
+        self.variable_drivers = {} # name: str -> value
+        self.realized_processes = [] # process_name: str
         self.widgets = []
         self.print_output = []
         self.root_scope = {
             "print": Function("print", 0, ("tuple", []), func_print),
-            "Slider": Function("Slider", 2, "const", func_Slider, do_prefix_names=False),
-            "Checkbox": Function("Checkbox", 0, "int", func_Checkbox, do_prefix_names=False),
-            "Selector": Function("Selector", 1, None, func_Selector, do_prefix_names=False),
-            "Uniform": Function("Uniform", [("low", "const"), ("high", "const")], "const", func_Uniform),
+            "Slider": Function(
+                "Slider", 2, "const", func_Slider, do_prefix_names=False,
+                named_args={"$default": "float", "$log": "bool", "$format": "str"},
+            ),
+            "Checkbox": Function("Checkbox", 0, "int", func_Checkbox, do_prefix_names=False, named_args={"$default": "int"}),
+            "Selector": Function("Selector", 1, None, func_Selector, do_prefix_names=False, named_args={"$default": "int"}),
+            "Uniform": Function("Uniform", [("low", "float"), ("high", "float")], "const", func_Uniform),
             "Gaussian": Function("Gaussian", [], "const", func_Gaussian),
+            "Gamma": Function("Gamma", [("alpha", "float"), ("beta", "float")], "const", func_Gamma),
+            "Beta": Function("Beta", [("alpha", "float"), ("beta", "float")], "const", func_Beta),
+            "Frechet": Function("Frechet", [("alpha", "float")], "const", func_Frechet),
             "addDeriv": Function("addDeriv", [("var", "var")], "var", func_addDeriv),
             "subDeriv": Function("subDeriv", [("var", "var")], "var", func_subDeriv),
+            "PoissonProcess": Function("PoissonProcess", [("rate", "float")], "dyn", func_PoissonProcess),
             "WienerProcess": Function("WienerProcess", [], "dyn", func_WienerProcess),
             "WienerDerivative": Function("WienerDerivative", [], "dyn", func_WienerDerivative),
+            "WienerDerivativeUnstable": Function("WienerDerivativeUnstable", [], "dyn", func_WienerDerivativeUnstable),
             "len": Function("len", [("arr", ("list", "dyn"))], "int", func_len),
             "str": Function("str", [("obj", None)], "int", func_str),
             "globalTime": Expr(LAYER_DYN, "globalTime", []),
             "globalStepSize": Expr(LAYER_DYN, "globalStepSize", []),
             "e": CompileTimeData(float, math.e),
             "pi": CompileTimeData(float, math.pi),
+            "false": CompileTimeData(bool, False),
+            "true": CompileTimeData(bool, True),
             # Values used internally by the interpreter.
             "@name_prefix": "",
             "@current_plot": None,
@@ -311,11 +371,17 @@ class Context:
         self.plots = {}
         self.settings = {
             "integrator": "cash-karp",
-            "tolerance": 1e-4,
+            "tolerance": 1e-6,
             "stepsize": 0.1,
-            "plotperiod": 0, # By default plot after every step.
+            "minstep": None,
+            "maxstep": None,
+            "plotperiod": 1e-2,
             "simtime": 10.0,
+            "mcsamples": 1,
+            "processscale": 1e-2,
+            "randomseed": None,
         }
+        self.unit_system = dsl_units.UnitSystem(self.interpreter_error)
         self.most_recent_line_number = 1
         self.unique_counters = collections.defaultdict(int)
 
@@ -338,7 +404,13 @@ class Context:
         if not isinstance(value, Datum):
             self.interpreter_error("Bug: Non-datum being type checked: %r : %r" % (value, ty))
         # Here float will accept int as a form of casting.
-        concrete_mapping = {"int": {int}, "float": {float, int}, "str": {str}, "Function": {Function}}
+        concrete_mapping = {
+            "int": {bool, int},
+            "float": {float, int},
+            "bool": {bool, int},
+            "str": {str},
+            "Function": {Function},
+        }
 
         # Handle the array case.
         if isinstance(ty, tuple) and ty[0] == "list":
@@ -482,7 +554,7 @@ class Context:
                 args=op_args,
             )
         elif kind == "call":
-            _, fn_expr, arg_exprs = expr
+            _, fn_expr, arg_exprs, named_arg_exprs = expr
             if fn_expr[0] == "var":
                 _, fn_name = fn_expr
                 fn = self.lookup(scope, fn_name)
@@ -495,6 +567,10 @@ class Context:
             if isinstance(fn, Datum):
                 self.interpreter_error("%s isn't a function; do you want to drop the parens?" % fn_name)
             args = [self.evaluate_expr(scope, arg_expr, purpose_name) for arg_expr in arg_exprs]
+            named_args = {
+                name: self.evaluate_expr(scope, arg_expr, purpose_name)
+                for name, arg_expr in named_arg_exprs.items()
+            }
             # If fn.args is a number, then it's a minimum number of arguments, and there is no type-safety.
             if isinstance(fn.args, int):
                 if len(args) < fn.args:
@@ -506,8 +582,20 @@ class Context:
                 self.interpreter_error("Function %s expected %i arguments, we passed %i" % (
                     fn.name, len(fn.args), len(args),
                 ))
+            # Check all the named arguments.
+            optional_args_values = {}
+            for name, val in named_args.items():
+                if name not in fn.named_args:
+                    if not fn.named_args:
+                        self.interpreter_error("Function %s doesn't take any optional arguments (%s was passed)" % (fn.name, name))
+                    self.interpreter_error("Function %s doesn't have an optional argument called %s (%s's optional arguments: %r)" % (
+                        fn.name, name, fn.name, list(fn.named_args),
+                    ))
+                self.type_check_assert(val, fn.named_args[name])
+                optional_args_values[name] = val
             subscope = scope.copy()
             subscope["@purpose_name"] = purpose_name
+            subscope["@optional_args"] = optional_args_values
             # Only update the name prefix if we're not immediately calling a builtin function.
             if fn.do_prefix_names:
                 subscope["@name_prefix"] = prefix_join(scope["@name_prefix"], self.get_unique(fn_name))
@@ -527,11 +615,26 @@ class Context:
             return expr[1]
         self.interpreter_error("Bug! Unhandled expr: %r" % (expr,))
 
+    def evaluate_unit_expr(self, unit_expr):
+        kind = unit_expr[0]
+        if kind == "var":
+            return self.unit_system.parse_unit_name(unit_expr[1])
+        elif kind == "binary-op":
+            pass
+            #if 
+        self.interpreter_error("Invalid operation in unit expression: %r" % (unit_expr,))
+
     def register_variable(self, name):
         if name not in self.all_variables:
             self.all_variables[name] = StateVariable(name)
         if name.endswith("'"):
             self.register_variable(name[:-1])
+        return self.all_variables[name]
+
+    def make_realized_process(self, name, args):
+        index = len(self.realized_processes)
+        self.realized_processes.append((name, args))
+        return index
 
     def obliterate_variable(self, base_name):
         order = 0
@@ -608,6 +711,22 @@ class Context:
         else:
             self.variable_drivers[lhs.name] = rhs
 
+    #def constify_via_state(self, expr):
+    #    name = "@random_param%i" % len(self.all_variables)
+    #    var = self.register_variable(name)
+    #    self.set_initializer(var, expr)
+    #    self.set_driver(self.all_variables[name + "'"], CompileTimeData(float, 0.0))
+    #    return var
+
+    def constify_via_param(self, name, expr):
+        param = self.make_adjustable_parameter(
+            desired_name="@random_" + name,
+            default_value=0.0,
+            name_must_be_exact=False,
+        )
+        self.expr_initialized_parameters[param.name] = expr
+        return param
+
     def get_purpose_name_from(self, lhs):
         if lhs.IS_VAR:
             return lhs.name
@@ -637,6 +756,7 @@ class Context:
                 )
             elif kind == "simple-plot":
                 _, var_exprs = statement
+                globalTime = self.evaluate_expr(scope, ("var", "globalTime"), "")
                 for var_expr in var_exprs:
                     val = self.evaluate_expr(scope, var_expr, "plot")
                     desired_name = "plot"
@@ -648,7 +768,7 @@ class Context:
                         layout["title"] = final_name
                         return {
                             "dataTemplates": [
-                                {"expr": val, "settings": copy.deepcopy(DEFAULT_PLOT_DATA_SETTINGS)},
+                                {"xExpr": globalTime, "yExpr": val, "settings": copy.deepcopy(DEFAULT_PLOT_DATA_SETTINGS)},
                             ],
                             "layout": layout,
                         }
@@ -681,31 +801,35 @@ class Context:
                         self.interpreter_error("Plot title must be a string")
                     current_plot["layout"]["title"] = title.value
                 elif kind == "trace":
-                    _, trace_expr, settings_overlay = statement
+                    _, x_expr, y_expr, settings_overlay = statement
                     settings = copy.deepcopy(DEFAULT_PLOT_DATA_SETTINGS)
                     self.overlay_json(settings, settings_overlay)
-                    trace_val = self.evaluate_expr(scope, trace_expr, "trace")
-                    if isinstance(trace_val, ArrayVariable):
-                        self.interpreter_error("Cannot use trace on an array, instead try:\n  for $i in 0 .. len(array) {\n    trace array[$i] { ... }\n  }")
+                    trace_x = self.evaluate_expr(scope, x_expr, "trace")
+                    trace_y = self.evaluate_expr(scope, y_expr, "trace")
+                    if isinstance(trace_y, ArrayVariable):
+                        self.interpreter_error("Cannot use trace on an array, instead try:\n  for $i in 0 .. len($array) {\n    trace globalTime, $array[$i] { ... }\n  }")
                     current_plot["dataTemplates"].append({
-                        "expr": trace_val,
+                        "xExpr": trace_x,
+                        "yExpr": trace_y,
                         "settings": settings,
                     })
                 elif kind == "trace2d":
-                    _, trace_expr, pitch_expr, settings_overlay = statement
+                    _, x_expr, z_array_expr, y_pitch_expr, settings_overlay = statement
                     settings = copy.deepcopy(DEFAULT_HEATMAP_DATA_SETTINGS)
                     self.overlay_json(settings, settings_overlay)
-                    trace_val = self.evaluate_expr(scope, trace_expr, "trace2d")
-                    pitch_val = self.evaluate_expr(scope, pitch_expr, "pitch")
-                    if not isinstance(trace_val, ArrayVariable):
+                    trace_x     = self.evaluate_expr(scope, x_expr, "trace2d")
+                    trace_y     = self.evaluate_expr(scope, z_array_expr, "trace2d")
+                    trace_pitch = self.evaluate_expr(scope, y_pitch_expr, "pitch")
+                    if not isinstance(trace_y, ArrayVariable):
                         self.interpreter_error("Can only use trace2d on an array")
-                    if pitch_val.LAYER != LAYER_COMPTIME or pitch_val.ty not in (int, float):
+                    if trace_pitch.LAYER != LAYER_COMPTIME or trace_pitch.ty not in (int, float):
                         self.interpreter_error("The second argument to trace2d must be an expression for the y pitch")
-                    settings["y"] = [pitch_val.value * i for i in range(trace_val.length)]
+                    settings["y"] = [trace_pitch.value * i for i in range(trace_y.length)]
                     current_plot["dataTemplates"].append({
+                        "xExpr": trace_x,
                         "rowExprs": [
-                            self.evaluate_expr(scope, ("binary-op", "[]", ("known-value", trace_val), ("lit", "int", i)), "trace2d")
-                            for i in range(trace_val.length)
+                            self.evaluate_expr(scope, ("binary-op", "[]", ("known-value", trace_y), ("lit", "int", i)), "trace2d")
+                            for i in range(trace_y.length)
                         ],
                         "settings": settings,
                     })
@@ -799,12 +923,49 @@ class Context:
                 if e is None:
                     return
                 return self.evaluate_expr(scope, e, "param")
+            elif kind == "new_unit":
+                _, unit_desc = statement
+                # Split up into the three cases: prefix, base unit, non-base unit.
+                if unit_desc["options"]["prefix"]:
+                    if unit_desc["definition"] is None:
+                        self.interpreter_error("Prefix unit with no definition makes no sense")
+                    units = self.evaluate_unit_expr(unit_desc["definition"])
+                    if not units.is_dimensionless():
+                        self.interpreter_error("Prefix unit must be dimensionless")
+                    self.unit_system.add_prefix(unit_desc["name"], units.scalar)
+                elif unit_desc["definition"] is None:
+                    self.unit_system.add_base_unit(unit_desc["name"])
+                else:
+                    units = self.evaluate_unit_expr(unit_desc["definition"])
+                    self.unit_system.add_defined_units(unit_desc["name"], units)
+            elif kind == "optim":
+                _, optim_desc = statement
+                objective_var = self.evaluate_expr(scope, ("var", "_optimizationObjective"), "")
+                self.set_driver(objective_var, self.evaluate_expr(scope, optim_desc["objective"], "objective"))
+                tunables = []
+                for tunable_expr in optim_desc["tunable"]:
+                    t = self.evaluate_expr(scope, tunable_expr, "tunable")
+                    # We demand that t be a param.
+                    if not isinstance(t, AdjustableParameter):
+                        self.interpreter_error("Tunable must be an expression that evaluates to a parameter")
+                    tunables.append(t.name)
+                self.widgets.append({
+                    "kind": "optimizer",
+                    "tunable": tunables,
+                    "options": optim_desc["options"],
+                })
             elif kind == "javascript":
-                self.interpreter_error("Inline javascript not currently fully implemented.")
+                self.interpreter_error("Inline javascript not currently fully implemented")
             else:
                 self.interpreter_error("Bug! Unhandled statement: %r" % (statement,))
 
     def codegen_shared(self):
+        # Patch up our settings.
+        if self.settings["minstep"] is None:
+            self.settings["minstep"] = self.settings["stepsize"] * 0.01
+        if self.settings["maxstep"] is None:
+            self.settings["maxstep"] = self.settings["stepsize"] * 100
+
         self.codegen_variable_info = {}
         # Start by sanity-checking everything.
         variable_orders = collections.defaultdict(int)
@@ -912,11 +1073,17 @@ class Context:
                 return "t"
             if expr.op == "globalStepSize":
                 return "dt"
-            if expr.op == "WienerDerivative":
-                return "wienerDerivative(dt)"
+            if expr.op == "WienerDerivativeUnstable":
+                return "wienerDerivativeUnstable(dt)"
+            if expr.op == "RealizedProcess":
+                return "realizedProcessFunctions[%i](t)" % expr.realized_index
+                #expr.
             fn_table = {
                 "Uniform": "uniformRandom",
                 "Gaussian": "gaussianRandom",
+                "Gamma": "gammaRandom",
+                "Beta": "betaRandom",
+                "Frechet": "frechetRandom",
                 "^": "Math.pow",
                 "exp": "Math.exp",
                 "log": "Math.log",
@@ -956,9 +1123,17 @@ class Context:
                     type(param.default_value), param.default_value
                 )),
             ))
+        for process_name, _ in self.realized_processes:
+            allocate_code.append("realizedProcesses.push(new Float64Array(realizedProcessLength)); // %s" % process_name)
         allocate_code = "\n".join(allocate_code)
 
         init_code = []
+        init_code.append("// Expression initialized params")
+        for param_name, expr in self.expr_initialized_parameters.items():
+            init_code.append("parameters[%s /*%s*/] = %s;" % (
+                self.parameter_allocation[param_name], param_name, self.codegen_js_expr(expr),
+            ))
+        init_code.append("// State initializers")
         for base_name in sorted(self.codegen_variable_info.keys()):
             info = self.codegen_variable_info[base_name]
             init_code.append("// " + base_name)
@@ -967,6 +1142,12 @@ class Context:
                 init_code.append("state[%s /*%s*/] = %s;" % (
                     self.slot_allocation[v], v, self.codegen_js_expr(initializer),
                 ))
+        init_code.append("// Realized processes")
+        for process_index, (process_name, args_exprs) in enumerate(self.realized_processes):
+            init_code.append("realizedProcessFunctions[%i] = make%s(realizedProcesses[%i], %s);" % (
+                process_index, process_name, process_index,
+                ", ".join(self.codegen_js_expr(arg) for arg in args_exprs),
+            ))
         init_code = "\n".join(init_code)
 
         derivative_code = ["// === Compute zeroth order ==="]
@@ -994,7 +1175,9 @@ class Context:
         extract_plot_datum = []
         for plot_name, plot_spec in self.plots.items():
             for i, template in enumerate(plot_spec["dataTemplates"]):
-                extract_plot_datum.append("plotData[%s][%i].x.push(t);" % (repr(plot_name), i))
+                extract_plot_datum.append("plotData[%s][%i].x.push(%s);" % (
+                    repr(plot_name), i, self.codegen_js_expr(template["xExpr"]),
+                ))
                 # Check which kind of template this is.
                 if "rowExprs" in template:
                     # Special trace2d case.
@@ -1006,9 +1189,16 @@ class Context:
                 else:
                     # Regular trace case.
                     extract_plot_datum.append("plotData[%s][%i].y.push(%s);" % (
-                        repr(plot_name), i, self.codegen_js_expr(template["expr"]),
+                        repr(plot_name), i, self.codegen_js_expr(template["yExpr"]),
                     ))
         extract_plot_datum = "\n".join(extract_plot_datum)
+
+        # This value of 42 should never be hit if it matters.
+        objective_code = "42"
+        if "_optimizationObjective" in self.all_variables:
+            objective_code = self.codegen_js_expr(
+                self.evaluate_expr(self.root_scope, ("var", "_optimizationObjective"), "")
+            )
 
         subst = {
             "degrees_of_freedom": self.degrees_of_freedom,
@@ -1019,16 +1209,21 @@ class Context:
             "derivative_code": indent_all_lines(12, derivative_code).strip(),
             "extract_plot_datum": indent_all_lines(12, extract_plot_datum).strip(),
             "plot_data_initial": indent_all_lines(12, json.dumps(self.plot_data_initial, indent=4)).strip(),
+            "objective_code": objective_code,
             "plots": indent_all_lines(8, json.dumps(self.plots_desc, indent=4)).strip(),
             "widgets": indent_all_lines(8, json.dumps(self.widgets, indent=4)).strip(),
             "parameter_table": json.dumps(self.parameter_allocation),
             "scratch_table": json.dumps(self.scratch_allocation),
             "state_table": json.dumps(self.slot_allocation),
             "settings": json.dumps(self.settings),
+            # Settings that we expose for makeWienerProcess.
+            "simtime": repr(self.settings["simtime"]),
+            "processscale": repr(self.settings["processscale"]),
         }
         return """
 (() => {
     let xoshiro128ss_state = [[1, 2, 3, 4]];
+    const RANDOM_EPSILON = 0.5 / 4294967296;
     const reseedRNG = () => {
         const newState = [];
         for (let i = 0; i < 4; i++)
@@ -1052,7 +1247,7 @@ class Context:
     function gaussianRandom() {
         if (boxMullerCache[0] === null) {
             // Use Box-Muller transform, and stash the other sample for later.
-            const u = 1e-50 + myRandom(), v = myRandom();
+            const u = RANDOM_EPSILON + myRandom(), v = myRandom();
             const scale = Math.sqrt(-2 * Math.log(u));
             const arg = 2 * Math.PI * v;
             boxMullerCache[0] = scale * Math.cos(arg);
@@ -1062,12 +1257,124 @@ class Context:
         boxMullerCache[0] = null;
         return val;
     }
-    function wienerDerivative(dt) {
+    function gammaRandom(alpha, beta) {
+        // Translated from the Python source code for random.py.
+        if (alpha > 1.0) {
+            // Uses R.C.H. Cheng, "The generation of Gamma
+            // variables with non-integral shape parameters",
+            // Applied Statistics, (1977), 26, No. 1, p71-74
+            const ainv = Math.sqrt(2 * alpha - 1);
+            const bbb = alpha - Math.log(4);
+            const ccc = alpha + ainv;
+            const SG_MAGICCONST = 1 + Math.log(4.5);
+            while (true) {
+                const u1 = myRandom()
+                if (u1 < 1e-7 || u1 > 0.9999999)
+                    continue;
+                const u2 = 1 - myRandom();
+                const v = Math.log(u1 / (1 - u1)) / ainv;
+                const x = alpha * Math.exp(v);
+                const z = u1 * u1 * u2;
+                const r = bbb + ccc * v - x;
+                if (r + SG_MAGICCONST - 4.5 * z >= 0.0 || r >= Math.log(z))
+                    return x * beta;
+            }
+        } else if (alpha === 1.0) {
+            return -Math.log(RANDOM_EPSILON + myRandom()) * beta;
+        } else {
+            // Uses ALGORITHM GS of Statistical Computing - Kennedy & Gentle
+            let x;
+            while (true) {
+                const u = myRandom();
+                const b = (Math.E + alpha) / Math.E;
+                const p = b * u;
+                if (p <= 1.0) {
+                    x = Math.pow(p, 1 / alpha);
+                } else {
+                    x = -Math.log((b - p) / alpha);
+                }
+                const u1 = myRandom();
+                if (p > 1.0) {
+                    if (u1 <= Math.pow(x, alpha - 1))
+                        break;
+                } else if (u1 <= Math.exp(x)) {
+                    break;
+                }
+            }
+            return x * beta;
+        }
+    }
+    function betaRandom(alpha, beta) {
+        // Translated from the Python source code for random.py.
+        const y = gammaRandom(alpha, 1.0);
+        if (y === 0.0)
+            return 0.0;
+        return y / (y + gammaRandom(beta, 1.0));
+    }
+    function frechetRandom(alpha) {
+        // From manually inverting the CDF for the Frechet distribution.
+        // I think I did this right?
+        return Math.pow(-Math.log(RANDOM_EPSILON + myRandom()), -1 / alpha);
+    }
+    function exponentialRandom() {
+        return -Math.log(RANDOM_EPSILON + myRandom());
+    }
+    function wienerDerivativeUnstable(dt) {
         return gaussianRandom() / Math.sqrt(dt);
     }
-    function makeWienerProcess() {
-        const cache = [];
-        return () => {
+    const realizedProcessLength = 1 + Math.ceil(%(simtime)s / %(processscale)s);
+    function simpleLerp(realization) {
+        return (t) => {
+            const moment = Math.max(0, Math.min(realizedProcessLength - 2, t / %(processscale)s));
+            const i = Math.floor(moment);
+            // Numerical stability isn't a huge concern here. lerpCoef always being 0 is safe.
+            const lerpCoef = moment - i;
+            return realization[i] * (1 - lerpCoef) + realization[i + 1] * lerpCoef;
+        };
+    }
+    function makePoissonProcess(realization, rate) {
+        let v = 0.0;
+        if (rate <= 0.0)
+            throw "PoissonProcess rate ended up negative!";
+        let nextStepTime = exponentialRandom() / rate;
+        for (let i = 0; i < realizedProcessLength; i++) {
+            realization[i] = v;
+            nextStepTime -= %(processscale)s;
+            while (nextStepTime <= 0.0) {
+                nextStepTime += exponentialRandom() / rate
+                v += 1.0;
+            }
+        }
+        return simpleLerp(realization);
+    }
+    function makeWienerProcess(realization) {
+        const scaling = Math.sqrt(%(processscale)s);
+        let v = 0.0;
+        for (let i = 0; i < realizedProcessLength; i++) {
+            realization[i] = v;
+            v += gaussianRandom() * scaling;
+        }
+        return simpleLerp(realization);
+    }
+    function makeWienerDerivative(realization) {
+        const scaling = Math.sqrt(%(processscale)s);
+        // Fill in the Wiener process that we're integrating up.
+        let v = 0.0;
+        for (let i = 0; i < realizedProcessLength; i++) {
+            realization[i] = v;
+            v += gaussianRandom() * scaling;
+        }
+        return (t) => {
+            const moment = Math.max(0, Math.min(realizedProcessLength - 2, t / %(processscale)s));
+            const i = Math.floor(moment);
+            const lerpCoef = moment - i;
+            // Naively we could just return: (realization[i + 1] - realization[i]) / %(processscale)s
+            // But the discontinuity thereof makes our adaptive integration rule go crazy.
+            // So instead we return a triangular hat that has the same integral, and thus twice the peak value.
+            // Here the coefficient is 4 because we need a factor of 2 to make our peak twice as high,
+            // and then another factor of 2 because Math.min(lerpCoef, 1 - lerpCoef) peaks at 0.5.
+            const c = 4 * (realization[i + 1] - realization[i]) / %(processscale)s;
+            return c * Math.min(lerpCoef, 1 - lerpCoef);
         };
     }
     return {
@@ -1077,23 +1384,31 @@ class Context:
             const scratch = new Float64Array(%(scratch_buffer_size)s);
             const parameters = new Float64Array(%(parameter_count)s);
             const plotData = {};
+            const realizedProcesses = [];
+            const realizedProcessFunctions = [];
             %(allocate_code)s
-            return {state, statePrime, scratch, parameters, plotData};
+            return {state, statePrime, scratch, parameters, plotData, realizedProcesses, realizedProcessFunctions};
         },
         initialize: (ctx) => {
             ctx.plotData = %(plot_data_initial)s;
-            const {state, scratch, parameters} = ctx;
+            const {state, scratch, parameters, realizedProcesses, realizedProcessFunctions} = ctx;
+            for (let i = 0; i < 100; i++)
+                myRandom();
             %(initialization_code)s
         },
         getDerivative: (ctx, t, dt, state, statePrime) => {
             // NB: We don't necessarily use the statePrime from ctx!
-            const {scratch, parameters} = ctx;
+            const {scratch, parameters, realizedProcessFunctions} = ctx;
             %(derivative_code)s
         },
         extractPlotDatum: (ctx, t, dt) => {
-            const {state, scratch, parameters, plotData} = ctx;
+            const {state, scratch, parameters, plotData, realizedProcessFunctions} = ctx;
             let fillRow = null;
             %(extract_plot_datum)s
+        },
+        getObjective: (ctx, t, dt, state) => {
+            const {scratch, parameters, realizedProcessFunctions} = ctx;
+            return %(objective_code)s;
         },
         reseedRNG,
         getRNGState: () => [...xoshiro128ss_state[0]],

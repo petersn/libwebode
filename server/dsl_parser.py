@@ -11,7 +11,7 @@ def valid_identifier(s):
     return s and s[0] in identifier_start_chars and all(c in identifier_chars for c in s)
 
 whitespace = set(" \t\n")
-symbol_characters = set("()[]{}.,?=+-*/%:<>!;|&~^'")
+symbol_characters = set("()[]{}.,?=+-*/%:<>!;|&~^'`")
 length_two_symbols = {
     "<=", ">=", "==", "!=",
     "+=", "-=", "*=", "/=", "%=",
@@ -20,9 +20,10 @@ length_two_symbols = {
 }
 length_four_symbols = {"<-+-"}
 keywords = {
-    "fn", "as", "for", "in", "if", "else", "return", "native", "javascript",
-    "var", "dyn", "const", "int", "float", "array",
-    "plot", "title", "trace", "trace2d", "layout", "simoptions",
+    "fn", "as", "with", "for", "in", "if", "else", "return", "native", "javascript",
+    "var", "dyn", "const", "int", "float", "array", "unit",
+    "plot", "title", "trace", "trace2d", "layout", "options",
+    "optim", "objective", "tunable",
 }
 escape_table = {
     "\\": "\\",
@@ -337,10 +338,23 @@ class Parser:
             return self.peek().kind, self.get_token().contents
         raise self.parse_error("Expected expression")
 
-    def parse_expression_postfixes(self, e):
+    def parse_expression_postfixes(self, e, allow_unit_app):
         while True:
             if self.match(("symbol", "(")):
-                e = "call", e, self.parse_comma_separated_until(self.parse_expr, ("symbol", ")"))
+                all_args = self.parse_comma_separated_until(self.parse_call_arg, ("symbol", ")"))
+                positional_args = []
+                named_args = {}
+                for arg in all_args:
+                    arg_kind = arg[0]
+                    if arg_kind == "arg":
+                        if named_args:
+                            raise self.parse_error("Position argument may not follow a named argument")
+                        positional_args.append(arg[1])
+                    elif arg_kind == "named_arg":
+                        named_args[arg[1]] = arg[2]
+                    else:
+                        assert False, "Bug"
+                e = "call", e, positional_args, named_args
             elif self.match(("symbol", "[")):
                 index = self.parse_expr()
                 self.expect(("symbol", "]"))
@@ -349,24 +363,29 @@ class Parser:
                 e = "dot", e, self.parse_var()
             elif self.match(("symbol", "'")):
                 e = "prime", e
+            elif allow_unit_app and self.match(("symbol", "`")):
+                units = self.parse_expr(allow_unit_app=False)
+                self.expect(("symbol", "`"))
+                e = "unit_app", e, units
             else:
                 break
         return e
 
-    def parse_expr(self, min_precedence=0):
+    def parse_expr(self, min_precedence=0, allow_unit_app=True):
         def is_operator(token, table):
             return (token.kind == "symbol" or token.kind == "keyword") and token.contents in table
 
         if self.match(("symbol", "(")):
-            e = self.parse_expr()
+            # Ugh, I think it is actually unambiguous to allow unit applications in here, but let's just not.
+            e = self.parse_expr(allow_unit_app=allow_unit_app)
             self.expect(("symbol", ")"))
-            e = self.parse_expression_postfixes(e)
+            e = self.parse_expression_postfixes(e, allow_unit_app)
         elif is_operator(self.peek(), unary_operators):
             operator = self.get_token()
-            e = self.parse_expr(unary_operators[operator.contents])
+            e = self.parse_expr(unary_operators[operator.contents], allow_unit_app=allow_unit_app)
             e = "unary-op", operator.contents, e
         else:
-            e = self.parse_expression_postfixes(self.parse_expression_atom())
+            e = self.parse_expression_postfixes(self.parse_expression_atom(), allow_unit_app)
 
         while True:
             if not is_operator(self.peek(), binary_operators):
@@ -376,15 +395,27 @@ class Parser:
             if op_precedence < min_precedence:
                 break
             self.advance()
-            rhs = self.parse_expr(op_precedence + op_left_assoc)
+            rhs = self.parse_expr(
+                op_precedence + op_left_assoc, allow_unit_app=allow_unit_app,
+            )
             e = "binary-op", operator.contents, e, rhs
 
         return e
 
+    # This is an argument at function definition time. That is, either "$var" or "$var: expr".
     def parse_fn_arg(self):
         name = self.parse_compvar()
         ty = self.parse_type() if self.match(("symbol", ":")) else None
         return name, ty
+
+    # This is an argument at call time. That is, either "expr" or "$var=expr".
+    def parse_call_arg(self):
+        if self.peek().kind == "compvar" and self.peek(+1) == ("symbol", "="):
+            arg_name = self.parse_compvar()
+            self.expect(("symbol", "="))
+            value = self.parse_expr()
+            return "named_arg", arg_name, value
+        return "arg", self.parse_expr()
 
     def parse_type(self):
         if self.match(("symbol", "(")):
@@ -448,16 +479,24 @@ class Parser:
                 return "complex-plot", body
             return "simple-plot", self.parse_comma_separated_until(self.parse_expr, ("symbol", ";"))
         if self.match(("keyword", "trace")):
-            return "trace", self.parse_expr(), self.parse_jsonlike_data()
+            x_axis = self.parse_expr()
+            self.expect(("symbol", ","))
+            y_axis = self.parse_expr()
+            return "trace", x_axis, y_axis, self.parse_jsonlike_data()
         if self.match(("keyword", "trace2d")):
-            return "trace2d", self.parse_expr(), self.parse_expr(), self.parse_jsonlike_data()
+            x_axis = self.parse_expr()
+            self.expect(("symbol", ","))
+            z_array = self.parse_expr()
+            self.expect(("symbol", ","))
+            y_pitch = self.parse_expr()
+            return "trace2d", x_axis, z_array, y_pitch, self.parse_jsonlike_data()
         if self.match(("keyword", "layout")):
             return "layout", self.parse_jsonlike_data()
         if self.match(("keyword", "title")):
             expr = self.parse_expr()
             self.expect(("symbol", ";"))
             return "title", expr
-        if self.match(("keyword", "simoptions")):
+        if self.match(("keyword", "options")):
             return "simoptions", self.parse_jsonlike_data()
         if self.match(("keyword", "fn")):
             function_name = self.parse_var()
@@ -529,6 +568,71 @@ class Parser:
             self.expect(("symbol", ";"))
             _, _, var_expr, count_expr = declaration
             return "array", var_expr, count_expr
+        if self.match(("keyword", "unit")):
+            unit_name = self.parse_var()
+            unit_definition = None
+            if self.match(("symbol", ":=")):
+                unit_definition = self.parse_expr()
+            unit_options = {"name": unit_name, "prefix": False}
+            if self.match(("keyword", "with")):
+                def parse_unit_option():
+                    if self.match(("var", "prefix")):
+                        unit_options["prefix"] = True
+                    elif self.match(("var", "unitname")):
+                        self.expect(("symbol", "("))
+                        token = self.get_token()
+                        if token.kind != "str":
+                            raise self.parse_error("unitname must be string")
+                        self.expect(("symbol", ")"))
+                        unit_options["name"] = token.contents
+                    else:
+                        raise self.parse_error("Unknown unit option")
+                self.parse_comma_separated_until(parse_unit_option, ("symbol", ";"))
+            else:
+                self.expect(("symbol", ";"))
+            return "new_unit", {
+                "name": unit_name,
+                "definition": unit_definition,
+                "options": unit_options,
+            }
+        if self.match(("keyword", "optim")):
+            self.expect(("symbol", "{"))
+            optim_desc = {
+                "tunable": [],
+                "objective": None,
+                "options": {
+                    "crossoverprob": 0.9,
+                    "diffweight": 0.8,
+                    "populationsize": 20,
+                    "maxsteps": 100,
+                    "patience": 10,
+                    "patiencefactor": 0.0,
+                    "plotperiod": 0.2,
+                },
+            }
+            def parse_optim_directive():
+                if self.match(("keyword", "tunable")):
+                    self.expect(("symbol", "{"))
+                    optim_desc["tunable"] += self.parse_comma_separated_until(self.parse_expr, ("symbol", "}"))
+                elif self.match(("keyword", "objective")):
+                    if optim_desc["objective"] is not None:
+                        raise self.parse_error("An optim block must have exactly one objective")
+                    optim_desc["objective"] = self.parse_expr()
+                    self.expect(("symbol", ";"))
+                elif self.match(("keyword", "options")):
+                    options = self.parse_jsonlike_data()
+                    for k, v in options.items():
+                        if k not in optim_desc["options"]:
+                            raise self.parse_error("Unknown optim option. Allowed options: %s" % (
+                                ", ".join(optim_desc["options"].keys())
+                            ))
+                        optim_desc["options"][k] = v
+                else:
+                    raise self.parse_error("Unknown directive in optim block (should be tunable or objective)")
+            self.parse_repeated_until(parse_optim_directive, ("symbol", "}"))
+            if optim_desc["objective"] is None:
+                raise self.parse_error("An optim must have an objective")
+            return "optim", optim_desc
         if self.peek().kind == "javascript":
             return "javascript", self.get_token()
 
@@ -551,7 +655,9 @@ x ~ Uniform(-1, 1);
 x'' <- -freq * x;
 
 plot x;
-simtime 10;
+options {
+  simtime: 10,
+}
 """
     tokens = Lexer(src).lex()
     print(" ".join(map(str, tokens)))

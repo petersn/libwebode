@@ -1,9 +1,12 @@
 All code I wrote in this repo I release under CC0, with one note:
 
-There is one file (demo-libwebode-app/src/simple.js) that is an MIT licensed part
-of the CodeMirror codebase, but with some very minor modifications from me. Those
-changes I also release under CC0, and thus as a user you may use that file at
-the meet of those two licenses, which is the MIT license.
+There are two files with other licenses that I modified:
+* demo-libwebode-app/src/simple.js
+* demo-libwebode-app/src/ode45cashkarpmodified.js
+Both are MIT licensed from other projects, but I release my changes under CCO.
+For example, simple.js is an MIT licensed part of the CodeMirror codebase, but
+with some very minor modifications from me that I under CC0, and thus as you
+may use that file at the meet of those two licenses, which is the MIT license.
 
 Additionally, in demo-libwebode-app/{src,public} there are a few files that I did
 not write or modify that were emitted by create-react-app. My understanding is
