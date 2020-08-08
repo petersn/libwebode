@@ -331,7 +331,7 @@ class Context:
             "@name_prefix": "",
             "@current_plot": None,
         }
-        self.always_global_variables = {"globalTime", "globalStepSize", "e", "pi"}
+        self.always_global_variables = {"globalTime", "globalStepSize", "e", "pi", "true", "false"}
         for name, comp_time_func in {
             "exp": math.exp,
             "log": math.log,
