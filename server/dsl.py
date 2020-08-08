@@ -1359,21 +1359,20 @@ class Context:
     function makeWienerDerivative(realization) {
         const scaling = Math.sqrt(%(processscale)s);
         // Fill in the Wiener process that we're integrating up.
-        let v = 0.0;
         for (let i = 0; i < realizedProcessLength; i++) {
-            realization[i] = v;
-            v += gaussianRandom() * scaling;
+            realization[i] = gaussianRandom() * scaling;
         }
         return (t) => {
             const moment = Math.max(0, Math.min(realizedProcessLength - 2, t / %(processscale)s));
             const i = Math.floor(moment);
             const lerpCoef = moment - i;
-            // Naively we could just return: (realization[i + 1] - realization[i]) / %(processscale)s
+            return realization[i] / %(processscale)s;
+            // Naively we could just return: realization[i] / %(processscale)s
             // But the discontinuity thereof makes our adaptive integration rule go crazy.
             // So instead we return a triangular hat that has the same integral, and thus twice the peak value.
             // Here the coefficient is 4 because we need a factor of 2 to make our peak twice as high,
             // and then another factor of 2 because Math.min(lerpCoef, 1 - lerpCoef) peaks at 0.5.
-            const c = 4 * (realization[i + 1] - realization[i]) / %(processscale)s;
+            const c = 4 * realization[i] / %(processscale)s;
             return c * Math.min(lerpCoef, 1 - lerpCoef);
         };
     }
@@ -1392,6 +1391,7 @@ class Context:
         initialize: (ctx) => {
             ctx.plotData = %(plot_data_initial)s;
             const {state, scratch, parameters, realizedProcesses, realizedProcessFunctions} = ctx;
+            // Ugh, this is ugly. This is to deal with how crappily I map seed -> state in the front-end.
             for (let i = 0; i < 100; i++)
                 myRandom();
             %(initialization_code)s
