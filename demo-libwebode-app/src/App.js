@@ -489,7 +489,10 @@ function produceAggregatedEnvelope(xPitch, traces) {
     for (let i = 0; i < traces.length; i++)
         fingers.push(0);
 
-    let maxX = Math.max(...traces.flatMap(tr => tr.x));
+    let maxX = 0.0;
+    for (const trace of traces)
+        for (const xVal of trace.x)
+            maxX = Math.max(maxX, xVal);
     const totalSteps = 1 + Math.ceil(maxX / xPitch);
     //console.log("Total steps:", totalSteps, maxX, xPitch);
     const n = () => new Float64Array(totalSteps);
