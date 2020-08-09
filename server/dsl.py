@@ -1119,6 +1119,9 @@ class Context:
             return "%r" % (expr.value,)
         self.interpreter_error("Bug: Unhandled expr in JS codegen: %r" % (expr,))
 
+    def codegen_numba_expr(self, expr):
+        pass
+
     def codegen_js(self):
         self.codegen_shared()
 

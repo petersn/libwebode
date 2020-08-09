@@ -33,7 +33,7 @@ RawCodeMirror.defineSimpleMode("odelang", {
         {regex: /~|<-/, token: "drive"},
         // Match built-ins.
         {regex: /(?:Slider|Selector|Checkbox|Uniform|Gaussian|Gamma|Beta|Frechet|PoissonProcess|WienerProcess|WienerDerivative|WienerDerivativeUnstable|D|Integrate|exp|log|sin|cos|sqrt|abs|floor|ceil|round|min|max|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
-        {regex: /(?:globalTime|globalStepSize|e|pi|true|false|tolerance|stepsize|plotperiod|integrator|simtime|minstep|maxstep|mcsamples|mctraces|mcenvelope|randomseed|processscale|mcpercentile|prefix|unitname|crossoverprob|diffweight|populationsize|maxsteps|patience|patiencefactor|objectiveaggregation)\b/, token: "atom"},
+        {regex: /(?:globalTime|globalStepSize|e|pi|true|false|backend|tolerance|stepsize|plotperiod|integrator|simtime|minstep|maxstep|mcsamples|mctraces|mcenvelope|randomseed|processscale|mcpercentile|prefix|unitname|crossoverprob|diffweight|populationsize|maxsteps|patience|patiencefactor|objectiveaggregation)\b/, token: "atom"},
         // Match embedded javascript.
         //{regex: /javascript\s{/, token: "meta", mode: {spec: "javascript", end: /}/}},
         // Match numbers.
@@ -216,6 +216,8 @@ const widgetTextStyle = {
 };
 const liftedTextStyle = {...widgetTextStyle, transform: "translateY(-25%)"};
 const widgetBoxStyle = {
+    display: "inline-block",
+    whiteSpace: "nowrap",
     height: "22px",
     border: "2px solid black",
     borderRadius: "10px",
@@ -277,7 +279,7 @@ class OptimizerBox extends React.Component {
 class ResultsWindow extends React.Component {
     constructor() {
         super();
-        this.state = {widgetStates: {}};
+        this.state = {widgetStates: {}, editBoxName: null, editBoxContents: ""};
         this.optimizerRef = React.createRef();
     }
 
@@ -310,6 +312,13 @@ class ResultsWindow extends React.Component {
                 continue;
             this.props.parent.setSimParameter(name, this.state.widgetStates[name], widgetSpec.recompile === true);
         }
+    }
+
+    onDoubleClick = (event, widgetSpec) => {
+        this.setState({
+            editBoxName: widgetSpec.name,
+            editBoxContents: String(this.getWidgetValue(widgetSpec.name, widgetSpec.default_value)),
+        });
     }
 
     renderWidget(widgetSpec) {
@@ -360,9 +369,34 @@ class ResultsWindow extends React.Component {
                         this.updateWidgetValue(widgetSpec, newValue);
                     }}
                 />
-                <span style={{...liftedTextStyle, whiteSpace: "pre-wrap"}}>
-                    {formattedRange}
-                </span>
+                {widgetSpec.name === this.state.editBoxName ?
+                    <input
+                        type="text"
+                        style={{marginLeft: "5px", width: "100px", transform: "translateY(-25%)"}}
+                        value={this.state.editBoxContents}
+                        onChange={(event) => {
+                            let newValue = event.target.value;
+                            this.setState({editBoxContents: newValue});
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                                const newValue = Number(this.state.editBoxContents);
+                                if (!isNaN(newValue))
+                                    this.updateWidgetValue(widgetSpec, newValue);
+                                this.setState({editBoxName: null});
+                            } else if (event.key === "Escape") {
+                                this.setState({editBoxName: null});
+                            }
+                        }}
+                    />
+                :
+                    <span
+                        style={{...liftedTextStyle, whiteSpace: "pre-wrap", cursor: "pointer"}}
+                        onDoubleClick={(event) => this.onDoubleClick(event, widgetSpec)}
+                    >
+                        {formattedRange}
+                    </span>
+                }
             </div>;
         } else if (widgetSpec.kind === "checkbox") {
             const value = this.getWidgetValue(widgetSpec.name, widgetSpec.default_value);
