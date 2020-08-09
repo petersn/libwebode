@@ -668,8 +668,8 @@ class Context:
             lambda final_name: AdjustableParameter(final_name, default_value),
         )
 
-    def compile_time_assign(self, scope, name, value):
-        if name in scope:
+    def compile_time_assign(self, scope, name, value, reassign=False):
+        if name in scope and not reassign:
             self.interpreter_error("Redefinition of %s" % (name,))
         scope[name] = value
 
@@ -858,16 +858,22 @@ class Context:
                         self.set_driver(lhs, rhs)
                     elif op_kind == "<-+-":
                         self.add_to_driver(lhs, rhs)
+                elif expr_kind == "binary-op" and e[1] == "=":
+                    _, op_kind, lhs, rhs = e
+                    if lhs[0] != "compvar":
+                        self.interpreter_error("Assignment must have $variable as LHS")
+                    _, var_name = lhs
+                    self.compile_time_assign(scope, var_name, self.evaluate_expr(scope, rhs, var_name), reassign=True)
                 elif expr_kind == "call":
                     result = self.evaluate_expr(scope, e, "param")
                 else:
-                    self.interpreter_error("Invalid expression. Only (x ~ y), (x <- y), (x <-+- y), (x := y), and function calls allowed at top-level.")
+                    self.interpreter_error("Invalid expression. Only (x ~ y), (x <- y), (x <-+- y), (x := y), (x = y), and function calls allowed at top-level.")
             elif kind == "let":
                 _, let_desc = statement
                 value = self.evaluate_expr(scope, let_desc["initializer"], let_desc["name"])
                 if let_desc["type"] is not None:
                     self.type_check_assert(value, let_desc["type"])
-                self.compile_time_assign(scope, let_desc["name"], value)
+                self.compile_time_assign(scope, let_desc["name"], value, reassign=False)
             elif kind == "array":
                 _, var_base_name_expr, array_length_expr = statement
                 # Get the array name.
