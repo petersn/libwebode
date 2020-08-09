@@ -489,17 +489,21 @@ function produceAggregatedEnvelope(xPitch, traces) {
     for (let i = 0; i < traces.length; i++)
         fingers.push(0);
 
-    let maxX = 0.0;
-    for (const trace of traces)
-        for (const xVal of trace.x)
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const trace of traces) {
+        for (const xVal of trace.x) {
+            minX = Math.max(minX, xVal);
             maxX = Math.max(maxX, xVal);
-    const totalSteps = 1 + Math.ceil(maxX / xPitch);
+        }
+    ]
+    const totalSteps = 1 + Math.ceil((maxX - minX) / xPitch);
     //console.log("Total steps:", totalSteps, maxX, xPitch);
     const n = () => new Float64Array(totalSteps);
     const x = n(), yMean = n(), yMin = n(), yMax = n(), yFirstQuintile = n(), yForthQuintile = n();
     const allValues = new Float64Array(fingers.length);
     for (let timeIndex = 0; timeIndex < totalSteps; timeIndex++) {
-        const now = xPitch * timeIndex;
+        const now = minX + xPitch * timeIndex;
         x[timeIndex] = now;
         let mean = 0.0, min = Infinity, max = -Infinity;
         for (let i = 0; i < fingers.length; i++) {
