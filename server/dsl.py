@@ -773,6 +773,7 @@ class Context:
                                 {"xExpr": globalTime, "yExpr": val, "settings": copy.deepcopy(DEFAULT_PLOT_DATA_SETTINGS)},
                             ],
                             "layout": layout,
+                            "envelopePeriod": None,
                         }
                     dict_insert_no_collision(self.plots, desired_name, make_plot_desc)
                     #dict_insert_no_collision(self.plots, desired_name, lambda final_name: {
