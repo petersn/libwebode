@@ -493,12 +493,11 @@ function produceAggregatedEnvelope(xPitch, traces) {
     let maxX = -Infinity;
     for (const trace of traces) {
         for (const xVal of trace.x) {
-            minX = Math.max(minX, xVal);
+            minX = Math.min(minX, xVal);
             maxX = Math.max(maxX, xVal);
         }
-    ]
+    }
     const totalSteps = 1 + Math.ceil((maxX - minX) / xPitch);
-    //console.log("Total steps:", totalSteps, maxX, xPitch);
     const n = () => new Float64Array(totalSteps);
     const x = n(), yMean = n(), yMin = n(), yMax = n(), yFirstQuintile = n(), yForthQuintile = n();
     const allValues = new Float64Array(fingers.length);
@@ -508,18 +507,16 @@ function produceAggregatedEnvelope(xPitch, traces) {
         let mean = 0.0, min = Infinity, max = -Infinity;
         for (let i = 0; i < fingers.length; i++) {
             const traceX = traces[i].x;
-            // Catch this finger up up with now.
+            // Catch this finger up with now.
             while (fingers[i] < traceX.length && traceX[fingers[i]] < now)
                 fingers[i]++;
             if (fingers[i] > 0)
                 fingers[i]--;
             // Aggregate its data.
-            // TODO: lerp here instead.
             const fingerTimeL = traceX[fingers[i]];
             const fingerTimeR = traceX[fingers[i] + 1];
             const fingerValL  = traces[i].y[fingers[i]];
             const fingerValR  = traces[i].y[fingers[i] + 1];
-            //const val = traces[i].y[fingers[i]];
             const lerpCoef = (now - fingerTimeL) / (fingerTimeR - fingerTimeL);
             const val = (1 - lerpCoef) * fingerValL + lerpCoef * fingerValR;
             mean += val;
