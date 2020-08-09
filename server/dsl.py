@@ -378,6 +378,8 @@ class Context:
             "plotperiod": 1e-2,
             "simtime": 10.0,
             "mcsamples": 1,
+            "mctraces": 100,
+            "mcenvelope": False,
             "processscale": 1e-2,
             "randomseed": None,
         }

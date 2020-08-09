@@ -608,6 +608,7 @@ class Parser:
                     "patience": 10,
                     "patiencefactor": 0.0,
                     "plotperiod": 0.2,
+                    "objectiveaggregation": "mean",
                 },
             }
             def parse_optim_directive():
@@ -626,6 +627,8 @@ class Parser:
                             raise self.parse_error("Unknown optim option. Allowed options: %s" % (
                                 ", ".join(optim_desc["options"].keys())
                             ))
+                        if k == "objectiveaggregation" and v not in {"mean", "min", "max"}:
+                            raise self.parse_error("objectiveaggregation option must be one of: mean, min, max")
                         optim_desc["options"][k] = v
                 else:
                     raise self.parse_error("Unknown directive in optim block (should be tunable or objective)")

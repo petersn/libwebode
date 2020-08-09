@@ -33,7 +33,7 @@ RawCodeMirror.defineSimpleMode("odelang", {
         {regex: /~|<-/, token: "drive"},
         // Match built-ins.
         {regex: /(?:Slider|Selector|Checkbox|Uniform|Gaussian|Gamma|Beta|Frechet|PoissonProcess|WienerProcess|WienerDerivative|WienerDerivativeUnstable|D|Integrate|exp|log|sin|cos|sqrt|abs|floor|ceil|round|min|max|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
-        {regex: /(?:globalTime|globalStepSize|e|pi|true|false|tolerance|stepsize|plotperiod|integrator|simtime|minstep|maxstep|mcsamples|randomseed|processscale|mcpercentile|prefix|unitname|crossoverprob|diffweight|populationsize|maxsteps|patience|patiencefactor)\b/, token: "atom"},
+        {regex: /(?:globalTime|globalStepSize|e|pi|true|false|tolerance|stepsize|plotperiod|integrator|simtime|minstep|maxstep|mcsamples|mctraces|mcenvelope|randomseed|processscale|mcpercentile|prefix|unitname|crossoverprob|diffweight|populationsize|maxsteps|patience|patiencefactor|objectiveaggregation)\b/, token: "atom"},
         // Match embedded javascript.
         //{regex: /javascript\s{/, token: "meta", mode: {spec: "javascript", end: /}/}},
         // Match numbers.
@@ -295,7 +295,7 @@ class ResultsWindow extends React.Component {
 
     updateWidgetValue(widgetSpec, newValue) {
         const oldValue = this.getWidgetValue(widgetSpec.name, newValue);
-        console.log("updateWidgetValue:", widgetSpec.name, oldValue, "->", newValue);
+        //console.log("updateWidgetValue:", widgetSpec.name, oldValue, "->", newValue);
         if (oldValue !== newValue) {
             this.props.parent.setSimParameter(widgetSpec.name, newValue, widgetSpec.recompile === true);
             this.props.parent.rerunSimulation();
@@ -449,6 +449,74 @@ class ButcherIntegrator {
 
 //const libwebode = require("./libwebode.js");
 
+function produceAggregatedEnvelope(xPitch, traces) {
+    const fingers = [];
+    for (let i = 0; i < traces.length; i++)
+        fingers.push(0);
+
+    let maxX = Math.max(...traces.flatMap(tr => tr.x));
+    const totalSteps = 1 + Math.ceil(maxX / xPitch);
+    //console.log("Total steps:", totalSteps, maxX, xPitch);
+    const n = () => new Float64Array(totalSteps);
+    const x = n(), yMean = n(), yMin = n(), yMax = n(), yFirstQuintile = n(), yForthQuintile = n();
+    const allValues = new Float64Array(fingers.length);
+    for (let timeIndex = 0; timeIndex < totalSteps; timeIndex++) {
+        const now = xPitch * timeIndex;
+        x[timeIndex] = now;
+        let mean = 0.0, min = Infinity, max = -Infinity;
+        for (let i = 0; i < fingers.length; i++) {
+            const traceX = traces[i].x;
+            // Catch this finger up up with now.
+            while (fingers[i] < traceX.length && traceX[fingers[i]] < now)
+                fingers[i]++;
+            if (fingers[i] > 0)
+                fingers[i]--;
+            // Aggregate its data.
+            // TODO: lerp here instead.
+            const fingerTimeL = traceX[fingers[i]];
+            const fingerTimeR = traceX[fingers[i] + 1];
+            const fingerValL  = traces[i].y[fingers[i]];
+            const fingerValR  = traces[i].y[fingers[i] + 1];
+            //const val = traces[i].y[fingers[i]];
+            const lerpCoef = (now - fingerTimeL) / (fingerTimeR - fingerTimeL);
+            const val = (1 - lerpCoef) * fingerValL + lerpCoef * fingerValR;
+            mean += val;
+            min = Math.min(min, val);
+            max = Math.max(max, val);
+            allValues[i] = val;
+        }
+        yMean[timeIndex] = mean / fingers.length;
+        yMin[timeIndex] = min;
+        yMax[timeIndex] = max;
+        allValues.sort();
+        const qi1 = Math.floor(allValues.length / 5);
+        let qi4 = Math.ceil(4 * allValues.length / 5);
+        if (qi4 >= allValues.length)
+            qi4 = allValues.length - 1;
+        yFirstQuintile[timeIndex] = allValues[qi1];
+        yForthQuintile[timeIndex] = allValues[qi4];
+    }
+    return {x, yMean, yMin, yMax, yFirstQuintile, yForthQuintile};
+}
+
+// From https://stackoverflow.com/a/44727682
+const plotlyDefaultColors = [
+    "#1f77b4", // muted blue
+    "#ff7f0e", // safety orange
+    "#2ca02c", // cooked asparagus green
+    "#d62728", // brick red
+    "#9467bd", // muted purple
+    "#8c564b", // chestnut brown
+    "#e377c2", // raspberry yogurt pink
+    "#7f7f7f", // middle gray
+    "#bcbd22", // curry yellow-green
+    "#17becf", // blue-teal
+];
+function getPlotlyColor(i) {
+    i %= plotlyDefaultColors.length;
+    return plotlyDefaultColors[i];
+}
+
 class App extends React.Component {
     constructor() {
         super();
@@ -481,37 +549,133 @@ class App extends React.Component {
         await this.rerunSimulation(true);
     }
 
-    async rerunSimulation(reseed, updatePlots, computeObjective) {
+    async rerunSimulation(reseed, updatePlots, objectiveAggregation) {
+        updatePlots = updatePlots === undefined ? true : updatePlots;
+        objectiveAggregation = objectiveAggregation === undefined ? false : objectiveAggregation;
+        /*
         if (this.simData.settings.mcsamples <= 1) {
-            return this.rerunSimulationCore(reseed, updatePlots, computeObjective);
+            const result = this.rerunSimulationCore(reseed, updatePlots, computeObjective);
         }
-        console.log("Starting rerun:", this.simData.settings.mcsamples);
-        const objectives = [];
+        */
+        //console.log("Starting rerun:", this.simData.settings.mcsamples);
+        const results = [];
         for (let sampleIndex = 0; sampleIndex < this.simData.settings.mcsamples; sampleIndex++) {
             const firstBehavior = reseed ? true : "mc-first";
-            objectives.push(this.rerunSimulationCore(sampleIndex === 0 ? firstBehavior : "mc", updatePlots, computeObjective));
+            results.push(this.rerunSimulationCore(
+                sampleIndex === 0 ? firstBehavior : "mc",
+                updatePlots,
+                objectiveAggregation !== false,
+            ));
         }
-        console.log("Objectives:", objectives);
-        if (computeObjective) {
-            let mean = 0.0;
-            for (const obj of objectives)
-                mean += obj;
-            return mean / objectives.length;
+
+        if (updatePlots) {
+            const plotStructs = [];
+            for (const plotName of Object.keys(this.simData.plots)) {
+                const plotSpec = this.simData.plots[plotName];
+                const data = [];
+                let nextColor = 0;
+                plotSpec.dataTemplates.map((dataTemplate, i) => {
+                    const showMainLegend = plotSpec.dataTemplates.length > 1;
+
+                    // There are several cases for how to aggregate this dataTemplate.
+                    if (this.simData.settings.mcenvelope && dataTemplate.type === "scatter") {
+                        const name = dataTemplate.hasOwnProperty("name") ? dataTemplate.name : "trace" + i;
+                        let color;
+                        if (dataTemplate.hasOwnProperty("line") && dataTemplate.line.hasOwnProperty("color")) {
+                            color = dataTemplate.line.color;
+                        } else {
+                            color = getPlotlyColor(nextColor++);
+                        }
+                        console.log("Color:", color);
+                        let fillcolor = d3.rgb(color);
+                        console.log("Fill Color:", fillcolor);
+                        fillcolor = `rgba(${fillcolor.r}, ${fillcolor.g}, ${fillcolor.b}, 0.3)`;
+                        console.log("Fill Color:", fillcolor);
+                        const traces = results.map(r => r.plotData[plotName][i]);
+                        const envelope = produceAggregatedEnvelope(this.simData.settings.plotperiod, traces);
+
+                        data.push({
+                            x: envelope.x, y: envelope.yMax, ...dataTemplate,
+                            showlegend: false,
+                            name: name + " max",
+                            line: {color},
+                        });
+                        data.push({
+                            showlegend: showMainLegend,
+                            x: envelope.x, y: envelope.yMean, ...dataTemplate,
+                            fill: "tonexty",  fillcolor,
+                            name: name + " mean",
+                            line: {color},
+                        });
+                        data.push({
+                            showlegend: false,
+                            x: envelope.x, y: envelope.yMin, ...dataTemplate,
+                            fill: "tonexty",  fillcolor,
+                            name: name + " min",
+                            line: {color},
+                        });
+                        //*
+                        data.push({
+                            x: envelope.x, y: envelope.yFirstQuintile, ...dataTemplate,
+                            showlegend: false,
+                            name: name + " 20%",
+                            line: {color: "rgba(0, 0, 0, 0.1)"},
+                        });
+                        data.push({
+                            showlegend: false,
+                            x: envelope.x, y: envelope.yForthQuintile, ...dataTemplate,
+                            fill: "tonexty", fillcolor,
+                            name: name + " 80%",
+                            line: {color: "rgba(0, 0, 0, 0.1)"},
+                        });
+                        //*/
+                    } else {
+                        let maxTraceCount = Math.min(results.length, this.simData.settings.mctraces);
+                        // For heatmaps we can only render one.
+                        // TODO: Possibly just average the heatmaps here.
+                        if (dataTemplate.type === "heatmap")
+                            maxTraceCount = 1;
+                        for (let traceIndex = 0; traceIndex < maxTraceCount; traceIndex++) {
+                            data.push({
+                                showlegend: showMainLegend,
+                                ...results[traceIndex].plotData[plotName][i],
+                                ...dataTemplate,
+                            });
+                        }
+                    }
+                });
+                /*
+                plotSpec.dataTemplates.map((dataTemplate, i) => ({
+                    ...results[0].plotData[plotName][i],
+                    ...dataTemplate,
+                }))
+                */
+                // The plotSpec has two fields, dataTemplates, and layout.
+                plotStructs.push({data, layout: plotSpec.layout});
+            }
+            this.setState({plotStructs});
+        }
+
+        const objectives = results.map(r => r.objective);
+        if (objectiveAggregation === "mean") {
+            return objectives.reduce((x, y) => x + y) / objectives.length;
+        } else if (objectiveAggregation === "min") {
+            return Math.min(...objectives);
+        } else if (objectiveAggregation === "max") {
+            return Math.max(...objectives);
         }
     }
 
-    rerunSimulationCore(reseed, updatePlots, computeObjective) {
-        updatePlots = updatePlots === undefined ? true : updatePlots;
-        computeObjective = computeObjective === undefined ? false : computeObjective;
+    rerunSimulationCore(reseed, computePlotValues, computeObjective) {
         if (this.simData === null)
             return;
         if (!["euler", "rk4", "cash-karp"].includes(this.simData.settings.integrator)) {
             this.setDialog("Unsupported integrator " + this.simData.settings.integrator + ", must select one of: euler, rk4, cash-karp");
             return;
         }
-        console.log("Starting inner run", reseed, this.simRNGStartingState);
+        //console.log("Starting inner run", reseed, this.simRNGStartingState);
         if (reseed === true || (reseed === "mc-first" && this.simRNGStartingState === null)) {
-            console.log("Reseeding");
+            //console.log("Reseeding");
             if (this.simData.settings.randomseed !== null) {
                 const seed = this.simData.settings.randomseed;
                 this.simData.setRNGState([123 + seed, 314, 159, 265]);
@@ -520,7 +684,7 @@ class App extends React.Component {
             }
             this.simRNGStartingState = this.simData.getRNGState();
         } else if (this.simRNGStartingState !== null && reseed !== "mc") {
-            console.log("Restoring seed")
+            //console.log("Restoring seed")
             this.simData.setRNGState(this.simRNGStartingState);
         }
         this.simData.initialize(this.simCtx);
@@ -545,9 +709,6 @@ class App extends React.Component {
         let cashKarpIntegrator = null;
         if (this.simData.settings.integrator === "cash-karp") {
             const cashKarpStep = (dydt, y, t) => {
-                // WARNING:
-                // This stepSize argument is basically a total lie.
-                // When using the Cash-Karp integrator you cannot rely on globalStepSize.
                 this.simData.getDerivative(this.simCtx, t, stepSize, y, dydt);
             };
             const cashKarpOptions = {
@@ -555,7 +716,7 @@ class App extends React.Component {
                 dtMinMag: this.simData.settings.minstep,
                 dtMaxMag: this.simData.settings.maxstep,
             };
-            console.log("Cash-Karp options:", cashKarpOptions);
+            //console.log("Cash-Karp options:", cashKarpOptions);
             cashKarpIntegrator = ode45(
                 state, cashKarpStep, 0.0, stepSize, cashKarpOptions,
             );
@@ -613,7 +774,7 @@ class App extends React.Component {
                 stepSize = cashKarpIntegrator.stepSizeActuallyTaken;
             }
 
-            if (updatePlots && (
+            if (computePlotValues && (
                 // Update if it's been long enough since our last plot period...
                 t >= lastPlotGrab + this.simData.settings.plotperiod
                 // ... or we're on the last sample.
@@ -624,25 +785,10 @@ class App extends React.Component {
             }
         }
 
-        if (updatePlots) {
-            const plotStructs = [];
-            for (const plotName of Object.keys(this.simData.plots)) {
-                const plotSpec = this.simData.plots[plotName];
-                // The plotSpec has two fields, dataTemplates, and layout.
-                plotStructs.push({
-                    data: plotSpec.dataTemplates.map((dataTemplate, i) => ({
-                        ...this.simCtx.plotData[plotName][i],
-                        ...dataTemplate,
-                    })),
-                    layout: plotSpec.layout,
-                });
-            }
-            this.setState({plotStructs});
-        }
-
-        if (computeObjective) {
-            return this.simData.getObjective(this.simCtx, t, stepSize, state);
-        }
+        return {
+            plotData: this.simCtx.plotData,
+            objective: computeObjective ? this.simData.getObjective(this.simCtx, t, stepSize, state) : null,
+        };
     }
 
     async activateOptimizer(optimizerWidgetSpec, optimizerBox) {
@@ -654,7 +800,7 @@ class App extends React.Component {
             return;
         }
         this.currentlyOptimizing = true;
-        console.log("Optimizer widgetSpec:", optimizerWidgetSpec);
+        //console.log("Optimizer widgetSpec:", optimizerWidgetSpec);
         const nameToWidgetSpec = {};
         for (const widgetSpec of this.state.widgetSpecs)
             nameToWidgetSpec[widgetSpec.name] = widgetSpec;
@@ -711,7 +857,7 @@ class App extends React.Component {
             // Rate limit the rerendering.
             const updatePlots = now > (lastRerender[0] + 1000 * optimizerWidgetSpec.options.plotperiod);
             objectiveCalls[0]++;
-            const obj = await this.rerunSimulation(false, updatePlots, true);
+            const obj = await this.rerunSimulation(false, updatePlots, optimizerWidgetSpec.options.objectiveaggregation);
             if (obj < bestSeenObjective[0]) {
                 bestSeenObjective[0] = obj;
                 bestSeenSettings[0] = {...settings};
