@@ -24,7 +24,6 @@ keywords = {
     "var", "dyn", "const", "int", "float", "array", "unit",
     "plot", "title", "trace", "trace2d", "layout", "options",
     "optim", "objective", "tunable",
-    "envelopeperiod",
 }
 escape_table = {
     "\\": "\\",
@@ -608,7 +607,7 @@ class Parser:
                     "maxsteps": 100,
                     "patience": 10,
                     "patiencefactor": 0.0,
-                    "plotperiod": 0.2,
+                    "redrawperiod": 0.2,
                     "objectiveaggregation": "mean",
                 },
             }
@@ -637,10 +636,6 @@ class Parser:
             if optim_desc["objective"] is None:
                 raise self.parse_error("An optim must have an objective")
             return "optim", optim_desc
-        if self.match(("keyword", "envelopeperiod")):
-            e = self.parse_expr()
-            self.expect(("symbol", ";"))
-            return "envelopeperiod", e
         if self.peek().kind == "javascript":
             return "javascript", self.get_token()
 

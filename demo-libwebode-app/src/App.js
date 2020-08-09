@@ -28,12 +28,12 @@ RawCodeMirror.defineSimpleMode("odelang", {
         // Match strings.
         {regex: /"(?:[^\\]|\\.)*?(?:"|$)/, token: "string"},
         // Match keywords.
-        {regex: /(?:javascript|array|global|fn|as|with|for|in|if|else|return|native|var|dyn|const|int|float|unit|Function|plot|title|envelopeperiod|trace|trace2d|layout|options|optim|objective|tunable)\b/, token: "keyword"},
+        {regex: /(?:javascript|array|global|fn|as|with|for|in|if|else|return|native|var|dyn|const|int|float|unit|Function|plot|title|trace|trace2d|layout|options|optim|objective|tunable)\b/, token: "keyword"},
         // Match initialization and driving.
         {regex: /~|<-/, token: "drive"},
         // Match built-ins.
         {regex: /(?:Slider|Selector|Checkbox|Uniform|Gaussian|Gamma|Beta|Frechet|PoissonProcess|WienerProcess|WienerDerivative|WienerDerivativeUnstable|D|Integrate|exp|log|sin|cos|sqrt|abs|floor|ceil|round|min|max|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
-        {regex: /(?:globalTime|globalStepSize|e|pi|true|false|backend|tolerance|stepsize|plotperiod|integrator|simtime|minstep|maxstep|mcsamples|mctraces|mcenvelope|randomseed|processscale|mcpercentile|prefix|unitname|crossoverprob|diffweight|populationsize|maxsteps|patience|patiencefactor|objectiveaggregation)\b/, token: "atom"},
+        {regex: /(?:globalTime|globalStepSize|e|pi|true|false|backend|tolerance|stepsize|maxplotpoints|integrator|simtime|minstep|maxstep|mcsamples|mctraces|mcenvelope|randomseed|processscale|mcpercentile|prefix|unitname|redrawperiod|crossoverprob|diffweight|populationsize|maxsteps|patience|patiencefactor|objectiveaggregation)\b/, token: "atom"},
         // Match embedded javascript.
         //{regex: /javascript\s{/, token: "meta", mode: {spec: "javascript", end: /}/}},
         // Match numbers.
@@ -484,7 +484,7 @@ class ButcherIntegrator {
 
 //const libwebode = require("./libwebode.js");
 
-function produceAggregatedEnvelope(xPitch, traces) {
+function produceAggregatedEnvelope(maxPlotPoints, traces) {
     const fingers = [];
     for (let i = 0; i < traces.length; i++)
         fingers.push(0);
@@ -497,7 +497,8 @@ function produceAggregatedEnvelope(xPitch, traces) {
             maxX = Math.max(maxX, xVal);
         }
     }
-    const totalSteps = 1 + Math.ceil((maxX - minX) / xPitch);
+    const xPitch = (maxX - minX) / maxPlotPoints;
+    const totalSteps = 1 + maxPlotPoints;
     const n = () => new Float64Array(totalSteps);
     const x = n(), yMean = n(), yMin = n(), yMax = n(), yFirstQuintile = n(), yForthQuintile = n();
     const allValues = new Float64Array(fingers.length);
@@ -631,8 +632,7 @@ class App extends React.Component {
                         fillcolor = `rgba(${fillcolor.r}, ${fillcolor.g}, ${fillcolor.b}, 0.3)`;
                         console.log("Fill Color:", fillcolor);
                         const traces = results.map(r => r.plotData[plotName][i]);
-                        const envelopePeriod = plotSpec.envelopePeriod !== null ? plotSpec.envelopePeriod : this.simData.settings.plotperiod;
-                        const envelope = produceAggregatedEnvelope(envelopePeriod, traces);
+                        const envelope = produceAggregatedEnvelope(this.simData.settings.maxplotpoints, traces);
 
                         data.push({
                             x: envelope.x, y: envelope.yMax, ...dataTemplate,
@@ -762,6 +762,8 @@ class App extends React.Component {
             );
         }
 
+        const plotPeriod = this.simData.settings.simtime / this.simData.settings.maxplotpoints;
+
         // The Cash-Karp integrator tries to avoid overstepping, so we allow a slight fudge factor to avoid
         // getting stuck in an infinite loop where the integrator thinks it's done, but we don't.
         const fudgeFactor = 1 - 1e-5;
@@ -816,7 +818,7 @@ class App extends React.Component {
 
             if (computePlotValues && (
                 // Update if it's been long enough since our last plot period...
-                t >= lastPlotGrab + this.simData.settings.plotperiod
+                t >= lastPlotGrab + plotPeriod
                 // ... or we're on the last sample.
                 || t >= this.simData.settings.simTime
             )) {
@@ -895,7 +897,7 @@ class App extends React.Component {
             applySettings(settings, false);
             const now = performance.now();
             // Rate limit the rerendering.
-            const updatePlots = now > (lastRerender[0] + 1000 * optimizerWidgetSpec.options.plotperiod);
+            const updatePlots = now > (lastRerender[0] + 1000 * optimizerWidgetSpec.options.redrawperiod);
             objectiveCalls[0]++;
             const obj = await this.rerunSimulation(false, updatePlots, optimizerWidgetSpec.options.objectiveaggregation);
             if (obj < bestSeenObjective[0]) {
