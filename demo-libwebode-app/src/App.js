@@ -28,7 +28,7 @@ RawCodeMirror.defineSimpleMode("odelang", {
         // Match strings.
         {regex: /"(?:[^\\]|\\.)*?(?:"|$)/, token: "string"},
         // Match keywords.
-        {regex: /(?:javascript|array|global|fn|as|with|for|in|if|else|return|native|var|dyn|const|int|float|unit|Function|plot|title|trace|trace2d|layout|options|optim|objective|tunable)\b/, token: "keyword"},
+        {regex: /(?:javascript|array|global|fn|as|with|for|in|if|else|return|native|var|dyn|const|int|float|unit|Function|plot|title|envelopeperiod|trace|trace2d|layout|options|optim|objective|tunable)\b/, token: "keyword"},
         // Match initialization and driving.
         {regex: /~|<-/, token: "drive"},
         // Match built-ins.
@@ -631,7 +631,8 @@ class App extends React.Component {
                         fillcolor = `rgba(${fillcolor.r}, ${fillcolor.g}, ${fillcolor.b}, 0.3)`;
                         console.log("Fill Color:", fillcolor);
                         const traces = results.map(r => r.plotData[plotName][i]);
-                        const envelope = produceAggregatedEnvelope(this.simData.settings.plotperiod, traces);
+                        const envelopePeriod = plotSpec.envelopePeriod !== null ? plotSpec.envelopePeriod : this.simData.settings.plotperiod;
+                        const envelope = produceAggregatedEnvelope(envelopePeriod, traces);
 
                         data.push({
                             x: envelope.x, y: envelope.yMax, ...dataTemplate,

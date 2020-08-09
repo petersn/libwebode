@@ -788,6 +788,7 @@ class Context:
                 subscope["@current_plot"] = self.plots[new_plot_name] = {
                     "dataTemplates": [],
                     "layout": layout,
+                    "envelopePeriod": None,
                 }
                 return_value = self.execute(subscope, body)
                 if return_value is not None:
@@ -931,6 +932,12 @@ class Context:
                 if e is None:
                     return
                 return self.evaluate_expr(scope, e, "param")
+            elif kind == "envelopeperiod":
+                _, e = statement
+                period = self.evaluate_expr(scope, e, "envelope_period")
+                if period.LAYER != LAYER_COMPTIME:
+                    self.interpreter_error("Envelope period must be a compile-time value")
+                scope["@current_plot"]["envelopePeriod"] = period.value
             elif kind == "new_unit":
                 _, unit_desc = statement
                 # Split up into the three cases: prefix, base unit, non-base unit.
@@ -1066,6 +1073,7 @@ class Context:
                     for template in plot_spec["dataTemplates"]
                 ],
                 "layout": plot_spec["layout"],
+                "envelopePeriod": plot_spec["envelopePeriod"],
             }
 
     def codegen_js_expr(self, expr):
