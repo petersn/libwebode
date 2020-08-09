@@ -371,6 +371,7 @@ class ResultsWindow extends React.Component {
                 />
                 {widgetSpec.name === this.state.editBoxName ?
                     <input
+                        autoFocus
                         type="text"
                         style={{marginLeft: "5px", width: "100px", transform: "translateY(-25%)"}}
                         value={this.state.editBoxContents}
