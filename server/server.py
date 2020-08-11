@@ -7,8 +7,11 @@ import traceback
 import tornado
 import tornado.ioloop
 import tornado.web
+import tornado.websocket
 import dsl_parser
 import dsl
+
+last_compilation = None
 
 class AllowCORS:
     def set_default_headers(self):
@@ -22,13 +25,14 @@ class AllowCORS:
 
 class CompileHandler(AllowCORS, tornado.web.RequestHandler):
     def post(self):
+        global last_compilation
         payload = json.loads(self.request.body)
         print("Compilation parameters:", payload["compilation_parameters"])
         ctx = dsl.Context(payload["compilation_parameters"])
         try:
             ast = dsl_parser.parse(payload["code"])
             ctx.execute(None, ast)
-            js = ctx.codegen_js()
+            js = ctx.codegen()
         except dsl_parser.SourcePositionError as error:
             print("%s Error: %s" % (error.NAME, error.args[0]))
             self.write(json.dumps({
@@ -41,21 +45,72 @@ class CompileHandler(AllowCORS, tornado.web.RequestHandler):
             return
         except Exception as error:
             print("Unhandled error:", error)
-            traceback.print_exc()
+            error_message = traceback.format_exc()
+            print(error_message)
             self.write(json.dumps({
                 "error": True,
                 "line_number": -1,
                 "column_number": -1,
-                "message": "Compiler bug: %s" % (error,),
+                "message": "Compiler bug:\n%s" % (error_message,),
                 "print_output": "\n".join(ctx.print_output),
             }))
             return
-        print(js)
+        #print(js)
+        last_compilation = ctx
         self.write(json.dumps({
             "error": False,
             "js": js,
             "print_output": "\n".join(ctx.print_output),
         }))
+
+class RemoteComputationHandler(tornado.websocket.WebSocketHandler):
+    def check_origin(self, origin):
+        return True
+
+    def open(self):
+        print("Opened WebSocket connection:", self)
+
+    def on_message(self, message):
+        print("============= Got request:", message)
+        request = json.loads(message)
+        if last_compilation is None:
+            self.write_message(json.dumps({"errorMessage": "BUG BUG BUG: No compilation whatosever!"}))
+            return
+        elif request["compilationId"] != last_compilation.compilation_id:
+            self.write_message(json.dumps({
+                "requestId": request["requestId"],
+                "errorMessage": "Got request for compilation id %i, when %i is current. Try recompiling?" % (
+                    request["compilationId"], last_compilation.compilation_id,
+                ),
+            }))
+            return
+
+        ctx = last_compilation
+        try:
+            results = ctx.native_backend_fulfill_request(request)
+        except dsl_parser.SourcePositionError as error:
+            self.write_message(json.dumps({
+                "requestId": request["requestId"],
+                "errorMessage": str(error.args[0]),
+            }))
+            return
+        except Exception as error:
+            print("Unhandled error:", error)
+            error_message = traceback.format_exc()
+            print(error_message)
+            self.write_message(json.dumps({
+                "requestId": request["requestId"],
+                "errorMessage": "Backend bug:\n%s" % (error_message,),
+            }))
+            return
+        results["requestId"] = request["requestId"]
+        results["errorMessage"] = None
+        response = json.dumps(results)
+        print("Generated", len(response), "bytes of response")
+        self.write_message(response)
+
+    def on_close(self):
+        print("Closed WebSocket connection:", self)
 
 class SaveHandler(AllowCORS, tornado.web.RequestHandler):
     def post(self):
@@ -78,6 +133,7 @@ class ReloadHandler(AllowCORS, tornado.web.RequestHandler):
 def make_app():
     return tornado.web.Application([
         ("/compile", CompileHandler),
+        ("/computation", RemoteComputationHandler),
         ("/save", SaveHandler),
         ("/reload", ReloadHandler),
     ])

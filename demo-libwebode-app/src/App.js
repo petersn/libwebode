@@ -6,11 +6,12 @@ import "codemirror/theme/material.css";
 import RawCodeMirror from "codemirror";
 import createPlotlyComponent from "react-plotly.js/factory";
 import * as d3 from "d3";
-import { update } from "plotly.js/lib/core";
+//import { update } from "plotly.js/lib/core";
 //const ode45 = require('ode45-cash-karp');
 const ode45 = require("./ode45cashkarpmodified.js");
 
-const SERVER_HOST = "http://localhost:50505";
+const SERVER_HOST = "localhost:50505";
+const SERVER_URI = "http://" + SERVER_HOST;
 
 // Importing plotly is a little bit of a nightmare.
 // If we just try to directly `import Plot from "react-plotly.js"` then webpack runs out of memory trying to build.
@@ -63,7 +64,6 @@ RawCodeMirror.defineSimpleMode("odelang", {
     },
 });
 
-let BAD_STARTING_CODE = null;
 let STARTING_CODE = "// System\n\n\n";
 
 function sleep(ms) {
@@ -192,6 +192,7 @@ class CodeEditor extends React.Component {
                     color: "white",
                     zIndex: 20,
                     opacity: this.state.showDialog ? 1 : 0,
+                    pointerEvents: this.state.showDialog ? "auto" : "none",
                     transition: "opacity 0.15s ease-in-out",
                     whiteSpace: "pre-wrap",
                 }}>
@@ -300,7 +301,7 @@ class ResultsWindow extends React.Component {
         //console.log("updateWidgetValue:", widgetSpec.name, oldValue, "->", newValue);
         if (oldValue !== newValue) {
             this.props.parent.setSimParameter(widgetSpec.name, newValue, widgetSpec.recompile === true);
-            this.props.parent.rerunSimulation();
+            this.props.parent.rerunSimulation(false);
         }
         this._updateWidgetValueNoCheck(widgetSpec.name, newValue);
     }
@@ -500,7 +501,7 @@ function produceAggregatedEnvelope(maxPlotPoints, traces) {
     const xPitch = (maxX - minX) / maxPlotPoints;
     const totalSteps = 1 + maxPlotPoints;
     const n = () => new Float64Array(totalSteps);
-    const x = n(), yMean = n(), yMin = n(), yMax = n(), yFirstQuintile = n(), yForthQuintile = n();
+    const x = n(), yMean = n(), yMin = n(), yMax = n(), yFirstQuintile = n(), yFourthQuintile = n();
     const allValues = new Float64Array(fingers.length);
     for (let timeIndex = 0; timeIndex < totalSteps; timeIndex++) {
         const now = minX + xPitch * timeIndex;
@@ -534,9 +535,9 @@ function produceAggregatedEnvelope(maxPlotPoints, traces) {
         if (qi4 >= allValues.length)
             qi4 = allValues.length - 1;
         yFirstQuintile[timeIndex] = allValues[qi1];
-        yForthQuintile[timeIndex] = allValues[qi4];
+        yFourthQuintile[timeIndex] = allValues[qi4];
     }
-    return {x, yMean, yMin, yMax, yFirstQuintile, yForthQuintile};
+    return {x, yMean, yMin, yMax, yFirstQuintile, yFourthQuintile};
 }
 
 // From https://stackoverflow.com/a/44727682
@@ -574,15 +575,19 @@ class App extends React.Component {
         this.onReload();
     }
 
+    /*
     async updateVal() {
         //await libwebode.initializationPromise;
         //this.setState({val: libwebode.getValue()});
         //this.forceUpdate();
     }
+    */
 
     async setupSimulation(simData) {
         this.simData = simData;
-        this.simCtx = this.simData.allocate();
+        if (this.simCtx !== null)
+            this.simCtx.deallocate();
+        this.simCtx = await this.simData.allocate();
         if (this.parametersRef.current)
             this.parametersRef.current.applyAllParameters();
         this.setState({widgetSpecs: this.simData.widgets});
@@ -598,15 +603,40 @@ class App extends React.Component {
         }
         */
         //console.log("Starting rerun:", this.simData.settings.mcsamples);
-        const results = [];
-        for (let sampleIndex = 0; sampleIndex < this.simData.settings.mcsamples; sampleIndex++) {
-            const firstBehavior = reseed ? true : "mc-first";
-            results.push(this.rerunSimulationCore(
-                sampleIndex === 0 ? firstBehavior : "mc",
-                updatePlots,
-                objectiveAggregation !== false,
-            ));
+
+        let simResults = [];
+        let preAggregated = {};
+
+        const start = performance.now();
+        if (this.simData.settings.backend.startsWith("native-")) {
+            const msg = {
+                type: "sim",
+                compilationId: this.simData.compilationId,
+                parameters: Array.from(this.simCtx.parameters),
+                reseed,
+                computePlotValues: updatePlots,
+                computeObjective: objectiveAggregation !== false,
+                objectiveAggregation,
+            };
+            const response = await this.simCtx.wsRequest(msg);
+            if (response.errorMessage !== null) {
+                this.setDialog(response.errorMessage);
+                return;
+            }
+            simResults = response.simResults;
+            preAggregated = response.preAggregated;
+        } else {
+            for (let sampleIndex = 0; sampleIndex < this.simData.settings.mcsamples; sampleIndex++) {
+                const firstBehavior = reseed ? true : "mc-first";
+                simResults.push(await this.rerunSimulationCore(
+                    sampleIndex === 0 ? firstBehavior : "mc",
+                    updatePlots,
+                    objectiveAggregation !== false,
+                ));
+            }
         }
+        const elapsed = performance.now() - start;
+        console.log("Integration time:", elapsed);
 
         if (updatePlots) {
             const plotStructs = [];
@@ -626,13 +656,16 @@ class App extends React.Component {
                         } else {
                             color = getPlotlyColor(nextColor++);
                         }
-                        console.log("Color:", color);
                         let fillcolor = d3.rgb(color);
-                        console.log("Fill Color:", fillcolor);
                         fillcolor = `rgba(${fillcolor.r}, ${fillcolor.g}, ${fillcolor.b}, 0.3)`;
-                        console.log("Fill Color:", fillcolor);
-                        const traces = results.map(r => r.plotData[plotName][i]);
-                        const envelope = produceAggregatedEnvelope(this.simData.settings.maxplotpoints, traces);
+                        // Here we allow the backend to give a pre-aggregated result.
+                        let envelope;
+                        if (preAggregated.hasOwnProperty([plotName, i])) {
+                            envelope = preAggregated[[plotName, i]];
+                        } else {
+                            const traces = simResults.map(r => r.plotData[plotName][i]);
+                            envelope = produceAggregatedEnvelope(this.simData.settings.maxplotpoints, traces);
+                        }
 
                         data.push({
                             x: envelope.x, y: envelope.yMax, ...dataTemplate,
@@ -663,14 +696,14 @@ class App extends React.Component {
                         });
                         data.push({
                             showlegend: false,
-                            x: envelope.x, y: envelope.yForthQuintile, ...dataTemplate,
+                            x: envelope.x, y: envelope.yFourthQuintile, ...dataTemplate,
                             fill: "tonexty", fillcolor,
                             name: name + " 80%",
                             line: {color: "rgba(0, 0, 0, 0.1)"},
                         });
                         //*/
                     } else {
-                        let maxTraceCount = Math.min(results.length, this.simData.settings.mctraces);
+                        let maxTraceCount = Math.min(simResults.length, this.simData.settings.mctraces);
                         // For heatmaps we can only render one.
                         // TODO: Possibly just average the heatmaps here.
                         if (dataTemplate.type === "heatmap")
@@ -678,7 +711,7 @@ class App extends React.Component {
                         for (let traceIndex = 0; traceIndex < maxTraceCount; traceIndex++) {
                             data.push({
                                 showlegend: showMainLegend,
-                                ...results[traceIndex].plotData[plotName][i],
+                                ...simResults[traceIndex].plotData[plotName][i],
                                 ...dataTemplate,
                             });
                         }
@@ -686,7 +719,7 @@ class App extends React.Component {
                 });
                 /*
                 plotSpec.dataTemplates.map((dataTemplate, i) => ({
-                    ...results[0].plotData[plotName][i],
+                    ...simResults[0].plotData[plotName][i],
                     ...dataTemplate,
                 }))
                 */
@@ -696,7 +729,7 @@ class App extends React.Component {
             this.setState({plotStructs});
         }
 
-        const objectives = results.map(r => r.objective);
+        const objectives = simResults.map(r => r.objective);
         if (objectiveAggregation === "mean") {
             return objectives.reduce((x, y) => x + y) / objectives.length;
         } else if (objectiveAggregation === "min") {
@@ -706,7 +739,7 @@ class App extends React.Component {
         }
     }
 
-    rerunSimulationCore(reseed, computePlotValues, computeObjective) {
+    async rerunSimulationCore(reseed, computePlotValues, computeObjective) {
         if (this.simData === null)
             return;
         if (!["euler", "rk4", "cash-karp"].includes(this.simData.settings.integrator)) {
@@ -925,7 +958,7 @@ class App extends React.Component {
         );
         optimizerBox.updateOptimizerPlot(objectivePlot, objectiveCalls[0]);
         applySettings(bestSeenSettings[0], true);
-        await this.rerunSimulation();
+        await this.rerunSimulation(true);
         this.currentlyOptimizing = false;
     }
 
@@ -938,8 +971,8 @@ class App extends React.Component {
         const agents = [];
         for (let i = 0; i < options.populationsize; i++) {
             agents.push({
-                "settings": makeRandom(),
-                "objective": null,
+                settings: makeRandom(),
+                objective: null,
             });
         }
         // Fill in the initial objective values.
@@ -1054,7 +1087,7 @@ class App extends React.Component {
     }
 
     onSaveCode = async (code) => {
-        const response = await fetch(SERVER_HOST + "/save", {
+        const response = await fetch(SERVER_URI + "/save", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({code}),
@@ -1065,7 +1098,7 @@ class App extends React.Component {
     }
 
     onReload = async () => {
-        const response = await fetch(SERVER_HOST + "/reload", {
+        const response = await fetch(SERVER_URI + "/reload", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({}),
@@ -1077,7 +1110,7 @@ class App extends React.Component {
     }
 
     onCompile = async (code) => {
-        const response = await fetch(SERVER_HOST + "/compile", {
+        const response = await fetch(SERVER_URI + "/compile", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({
