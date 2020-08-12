@@ -558,6 +558,8 @@ function getPlotlyColor(i) {
     return plotlyDefaultColors[i];
 }
 
+const FINAL_RESIM_DEBOUNCE = 250;
+
 class App extends React.Component {
     constructor() {
         super();
@@ -568,6 +570,8 @@ class App extends React.Component {
         this.simCtx = null;
         this.simRNGStartingState = null;
         this.currentlyOptimizingCounter = 0;
+        this.waitingOnRequest = false;
+        this.debounceResimTimeout = null;
     }
 
     componentDidMount() {
@@ -609,6 +613,8 @@ class App extends React.Component {
 
         const start = performance.now();
         if (this.simData.settings.backend.startsWith("native-")) {
+            clearTimeout(this.debounceResimTimeout);
+
             const msg = {
                 type: "sim",
                 compilationId: this.simData.compilationId,
@@ -618,7 +624,21 @@ class App extends React.Component {
                 computeObjective: objectiveAggregation !== false,
                 objectiveAggregation,
             };
+            // Check if we can and should skip this.
+            if (this.waitingOnRequest && objectiveAggregation === false) {
+                this.debounceResimTimeout = setTimeout(
+                    () => {
+                        console.log("Final debounce resim!");
+                        this.rerunSimulation(false);
+                    },
+                    FINAL_RESIM_DEBOUNCE,
+                )
+                return;
+            }
+            this.waitingOnRequest = true;
             const response = await this.simCtx.wsRequest(msg);
+            this.waitingOnRequest = false;
+
             if (response.errorMessage !== null) {
                 this.setDialog(response.errorMessage);
                 return;
@@ -1036,9 +1056,9 @@ class App extends React.Component {
                 if (newObjective <= agents[xIndex].objective)
                     agents[xIndex] = {settings: newSettings, objective: newObjective};
                 const patienceThreshold = bestObjectiveEverSeen > 0 ?
-                    bestObjectiveEverSeen * (1 - options.patienceFactor) :
-                    bestObjectiveEverSeen * (1 + options.patienceFactor);
-                if (newObjective < patienceThreshold * options.patiencefactor) {
+                    bestObjectiveEverSeen * (1 - options.patiencefactor) :
+                    bestObjectiveEverSeen * (1 + options.patiencefactor);
+                if (newObjective < patienceThreshold) {
                     bestObjectiveEverSeen = newObjective;
                     patience = options.patience;
                 }
