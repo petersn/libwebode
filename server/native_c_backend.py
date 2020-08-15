@@ -161,9 +161,11 @@ class CBackend(native_backend.NativeBackend):
                     ))
         subst["extract_plot_datum"] = dsl.indent_all_lines(16, "\n".join(extract_plot_datum)).strip()
 
-        subst["objective_expression"] = self.ctx.codegen_c_expr(
-            self.ctx.evaluate_expr(self.ctx.root_scope, ("var", "_optimizationObjective"), "")
-        )
+        subst["objective_expression"] = "42"
+        if "_optimizationObjective" in self.ctx.all_variables:
+            subst["objective_expression"] = self.ctx.codegen_c_expr(
+                self.ctx.evaluate_expr(self.ctx.root_scope, ("var", "_optimizationObjective"), "")
+            )
 
         return C_TEMPLATE % subst
 
