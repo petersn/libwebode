@@ -511,6 +511,8 @@ class Context:
             result = args[0] == args[1]
         elif op_name == "!=":
             result = args[0] != args[1]
+        elif opname == "!":
+            result = not args[0]
         else:
             self.interpreter_error("Bug: Unimplemented compile-time operation: %r(%s)" % (
                 op_name, ", ".join(str(arg) for arg in args)
@@ -1126,7 +1128,7 @@ class Context:
                 "min": "Math.min",
                 "max": "Math.max",
             }
-            pass_through_operators = {"+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!="}
+            pass_through_operators = {"+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!=", "!", "&&", "||"}
             if expr.op in fn_table:
                 return fn_table[expr.op] + "(%s)" % ", ".join(args)
             elif expr.op == "select":
@@ -1199,7 +1201,7 @@ class Context:
                 "%": "fmod",
                 "^": "pow",
             }
-            pass_through_operators = {"+", "-", "*", "/", "<", ">", "<=", ">=", "==", "!="}
+            pass_through_operators = {"+", "-", "*", "/", "<", ">", "<=", ">=", "==", "!=", "!", "&&", "||"}
             if expr.op in fn_table:
                 return fn_table[expr.op] + "(%s)" % ", ".join(args)
             elif expr.op == "select":
