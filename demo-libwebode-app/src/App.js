@@ -33,7 +33,7 @@ RawCodeMirror.defineSimpleMode("odelang", {
         // Match initialization and driving.
         {regex: /~|<-/, token: "drive"},
         // Match built-ins.
-        {regex: /(?:Slider|Selector|Checkbox|Uniform|Gaussian|Gamma|Beta|Frechet|PoissonProcess|WienerProcess|WienerDerivative|WienerDerivativeUnstable|D|Integrate|exp|log|sin|cos|sqrt|abs|floor|ceil|round|min|max|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
+        {regex: /(?:Slider|Selector|Checkbox|Uniform|Gaussian|Gamma|Beta|Frechet|PoissonProcess|WienerProcess|WienerDerivative|WienerDerivativeUnstable|D|Integrate|exp|log|sin|cos|sqrt|abs|floor|ceil|round|min|max|select|len|str|addDeriv|subDeriv|index_interpolating|print)\b/, token: "builtin"},
         {regex: /(?:globalTime|globalStepSize|e|pi|true|false|backend|tolerance|stepsize|maxplotpoints|integrator|simtime|minstep|maxstep|mcsamples|mctraces|mcenvelope|randomseed|processscale|mcpercentile|prefix|unitname|redrawperiod|crossoverprob|diffweight|populationsize|maxsteps|patience|patiencefactor|objectiveaggregation)\b/, token: "atom"},
         // Match embedded javascript.
         //{regex: /javascript\s{/, token: "meta", mode: {spec: "javascript", end: /}/}},
@@ -1106,19 +1106,29 @@ class App extends React.Component {
         this.simCtx.parameters[this.simData.parameterTable[name]] = value;
     }
 
+    makeURI = (page) => {
+        let path = new URL(window.location).searchParams.get("path");
+        if (path === null)
+            path = "system.webode";
+        console.log("Requesting:", path);
+        return SERVER_URI + "/" + page + "?" + new URLSearchParams({path});
+    }
+
     onSaveCode = async (code) => {
-        const response = await fetch(SERVER_URI + "/save", {
+        const response = await fetch(this.makeURI("save"), {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({code}),
         });
         const result = await response.json();
-        if (!result.error)
+        if (result.error)
+            this.setDialog("Error saving.");
+        else
             this.setDialog("Saved!", 750);
     }
 
     onReload = async () => {
-        const response = await fetch(SERVER_URI + "/reload", {
+        const response = await fetch(this.makeURI("reload"), {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({}),

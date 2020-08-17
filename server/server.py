@@ -2,7 +2,9 @@
 libwebode exploration server
 """
 
+import os
 import json
+import string
 import traceback
 import tornado
 import tornado.ioloop
@@ -12,6 +14,19 @@ import dsl_parser
 import dsl
 
 last_compilation = None
+
+# We have to be at least a tiny bit careful here about security.
+def get_fs_path(url_param):
+    requested_path = url_param if url_param is not None else "system.webode"
+    allowed_characters = set(string.printable) - set("\r\n\t\x0b\x0c")
+    requested_path = "".join(c for c in requested_path if c in allowed_characters)
+    # We now try to make sure that the path cannot go outside of files/
+    while ".." in requested_path:
+        requested_path = requested_path.replace("..", "")
+    sandbox = "files/"
+    path = os.path.join(sandbox, requested_path)
+    print("Requested path", repr(url_param), "mapped to", repr(path))
+    return path
 
 class AllowCORS:
     def set_default_headers(self):
@@ -114,16 +129,22 @@ class RemoteComputationHandler(tornado.websocket.WebSocketHandler):
 
 class SaveHandler(AllowCORS, tornado.web.RequestHandler):
     def post(self):
+        fs_path = get_fs_path(self.get_argument("path", None))
         payload = json.loads(self.request.body)
         code = payload["code"]
-        with open("system.webode", "w") as f:
-            f.write(code)
-        self.write(json.dumps({"error": False}))
+        try:
+            with open(fs_path, "w") as f:
+                f.write(code)
+        except FileNotFoundError:
+            self.write(json.dumps({"error": True}))
+        else:
+            self.write(json.dumps({"error": False}))
 
 class ReloadHandler(AllowCORS, tornado.web.RequestHandler):
     def post(self):
+        fs_path = get_fs_path(self.get_argument("path", None))
         try:
-            with open("system.webode", "r") as f:
+            with open(fs_path, "r") as f:
                 code = f.read()
         except FileNotFoundError:
             self.write(json.dumps({"error": True}))

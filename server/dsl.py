@@ -267,6 +267,16 @@ def func_str(ctx, scope):
     s = obj.name if hasattr(obj, "name") else str(obj)
     return CompileTimeData(str, s)
 
+def func_select(ctx, scope):
+    if scope["selector"].LAYER == LAYER_COMPTIME:
+        if scope["selector"].value:
+            return scope["true_case"]
+        else:
+            return scope["false_case"]
+    args = [scope["selector"], scope["true_case"], scope["false_case"]]
+    layer = min(arg.LAYER for arg in args)
+    return Expr(layer, "select", args)
+
 def prefix_join(a, b):
     if a == "":
         return b
@@ -331,6 +341,7 @@ class Context:
             "WienerDerivativeUnstable": Function("WienerDerivativeUnstable", [], "dyn", func_WienerDerivativeUnstable),
             "len": Function("len", [("arr", ("list", "dyn"))], "int", func_len),
             "str": Function("str", [("obj", None)], "int", func_str),
+            "select": Function("select", [("selector", None), ("true_case", None), ("false_case", None)], None, func_select),
             "globalTime": Expr(LAYER_DYN, "globalTime", []),
             "globalStepSize": Expr(LAYER_DYN, "globalStepSize", []),
             "e": CompileTimeData(float, math.e),
@@ -1115,9 +1126,11 @@ class Context:
                 "min": "Math.min",
                 "max": "Math.max",
             }
-            pass_through_operators = {"+", "-", "*", "/", "%"}
+            pass_through_operators = {"+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!="}
             if expr.op in fn_table:
                 return fn_table[expr.op] + "(%s)" % ", ".join(args)
+            elif expr.op == "select":
+                return "(%s ? %s : %s)" % tuple(args)
             elif expr.op in pass_through_operators:
                 if len(args) == 1:
                     return "(%s %s)" % (expr.op, args[0])
@@ -1186,9 +1199,11 @@ class Context:
                 "%": "fmod",
                 "^": "pow",
             }
-            pass_through_operators = {"+", "-", "*", "/"}
+            pass_through_operators = {"+", "-", "*", "/", "<", ">", "<=", ">=", "==", "!="}
             if expr.op in fn_table:
                 return fn_table[expr.op] + "(%s)" % ", ".join(args)
+            elif expr.op == "select":
+                return "(%s ? %s : %s)" % tuple(args)
             elif expr.op in pass_through_operators:
                 if len(args) == 1:
                     return "(%s %s)" % (expr.op, args[0])
